@@ -491,7 +491,7 @@ the **ready** state.
 
 When variable quantums are enabled, the system uses the `PspVariableQuantums` table to manage thread execution times. This table is loaded into the `PspForegroundQuantum` table, which is used by the `PspComputeQuantum()`. The function assigns a quantum index based on whether a process is a **foreground process** (one containing the thread that owns the foreground window).
 - For **background** processes, an index of 0 is chosen, corresponding to the **default thread quantum**.
-- For **foreground** processes, the quantum index is determined by the p**riority separation** value, which defines the priority boost applied to foreground threads. This boost increases the thread's quantum: for each additional priority level (up to 2), an extra quantum is added.
+- For **foreground** processes, the quantum index is determined by the **priority separation** value, which defines the priority boost applied to foreground threads. This boost increases the thread's quantum: for each additional priority level (up to 2), an extra quantum is added.
 
 By default, Windows sets the maximum **priority boost** for foreground threads (priority separation = 2), resulting in quantum index 2. This gives foreground threads two extra quantums, for a total of three quantums.
 
@@ -499,9 +499,29 @@ Thus, when a **window is brought** into the **foreground** on a client system, a
 
 #### Quantum Settings Registry Value
 
-
 - The user interface to control quantum settings described earlier modifies the registry value: `HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl\Win32PrioritySeparation`
 -  This value consists of 6 bits divided into the three 2-bit fields:
    -  **Short vs Long**: A value of 1 specifies long quantums, and 2 specifies short ones. A setting of 0 or 3 indicates that the default appropriate for the system will be used.
    -  **Variable vs Fixed**: A setting of 1 means to enable the variable quantum table based on the algorithm shown in the “Variable Quantums” section. A setting of 0 or 3 means that the default appropriate for the system will be used.
    -  **Priority Separation**: This field (stored in the kernel variable `PsPrioritySeparation`) defines the priority separation (up to 2).
+
+- 🔭 You can dump the values of `PsPrioritySeparation`, `PspForegroundQuantum` and `QuantumReset` by running:
+  ```c
+  lkd> dd PsPrioritySeparation L1
+  81d3101c 00000002
+  lkd> db PspForegroundQuantum L3
+  81d0946c 06 0c 12
+  lkd> .process
+  Implicit process is now 85b32d90
+  lkd> dt nt!_KPROCESS 85b32d90 QuantumReset
+  nt!_KPROCESS
+  +0x061 QuantumReset : 6 ''
+  ```
+
+### Priority Boosts
+
+The Windows scheduler periodically adjusts the current priority of threads through an internal priority-boosting mechanism. In many cases, it does so for **decreasing various latencies** and **increasing responsiveness**.
+
+#### Boosts Due to Scheduler/Dispatcher Events
+
+
