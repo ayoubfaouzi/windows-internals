@@ -1,254 +1,255 @@
-## Chapter 10 Memory Management
+# Chapter 10 Memory Management
 
-### Introduction to the Memory Manager
+## Introduction to the Memory Manager
 
-- because the VAS might be larger or smaller than the PM on the machine, the memory manager has two primary tasks:
-    - __translating, or mapping__, a process’s VAS into PM so that when a thread running in the context of that process reads or writes to the VAS, the correct physical address is referenced. (The subset of a process’s virtual address space that is physically resident is called the __working set__).
-    - __paging__ some of the contents of memory to disk when it becomes overcommitted—that is, when running threads or system code try to use more PM than is currently available—and bringing the contents back into PM when needed.
+- Because the VAS might be larger or smaller than the PM on the machine, the memory manager has two primary tasks:
+  - **Translating, or mapping**, a process’s VAS into PM so that when a thread running in the context of that process reads or writes to the VAS, the correct PA is referenced. (The subset of a process’s VAS that is **physically resident** is called the **working set**).
+  - **Paging** some of the contents of memory to disk when it becomes overcommitted — that is, when running threads or system code try to use more PM than is currently available — and bringing the contents back into PM when needed.
 
 ### Memory Manager Components
 
-- memory manager consists of the following components:
-    - a set of __executive system services__ for allocating, deallocating, and managing virtual memory, most of which are exposed through the Windows API or kernel-mode device driver interfaces.
-    - __translation-not-valid__ and __access fault trap handler__ for resolving hardware-detected memory management exceptions and making virtual pages resident on behalf of a process.
-    - Six __key top-level routines__, each running in one of six different kernel-mode threads in the System process:
-        - __balance set manager__ (`KeBalanceSetManager`, priority 16). It calls an inner routine, the __working set manager__ (`MmWorkingSetManager`), once per second as well as when free memory falls below a certain threshold. The working set manager drives the overall memory management policies, such as __working set trimming, aging, and modified page writing__.
-        - __process/stack swapper__ (`KeSwapProcessOrStack`, priority 23) performs both process and kernel thread stack inswapping and outswapping. The balance set manager and the thread-scheduling code in the kernel awaken this thread when an inswap or outswap operation needs to take place.
-        - __modified page writer__ (`MiModifiedPageWriter`, priority 17) writes __dirty pages__ on the modified list back to the appropriate paging files. This thread is awakened when the size of the modified list needs to be reduced.
-        - __mapped page writer__ (`MiMappedPageWriter`, priority 17) writes dirty pages in mapped files to disk (or remote storage). It is awakened when the size of the modified list needs to be reduced or if pages for mapped files have been on the modified list for more than 5 minutes. This second modified page writer thread is necessary because it can generate page faults that result in requests for free pages. If there were no free pages and there was only one modified page writer thread, the system could deadlock waiting for free pages.
-        - __segment dereference thread__ (`MiDereferenceSegmentThread`, priority 18) is responsible for cache reduction as well as for page file growth and shrinkage. (For example, if there is no VAS for paged pool growth, this thread trims the page cache so that the paged pool used to anchor it can be freed for reuse.)
-        - __zero page thread__ (`MmZeroPageThread`, base priority 0) zeroes out pages on the free list so that a cache of zero pages is available to satisfy future demand-zero page faults. Unlike the other routines described here, this routine is not a top-level thread function but is called by the top-level thread routine Phase1Initialization. MmZeroPageThread never returns to its caller, so in effect the Phase 1 Initialization thread becomes the zero page thread by calling this routine. Memory zeroing in some cases is done by a faster function called `MiZeroInParallel`.
+- Memory manager consists of the following components:
+  - A set of **executive system services** for allocating, deallocating, and managing virtual memory, most of which are exposed through the Windows API or kernel-mode device driver interfaces.
+  - **Translation-not-valid** and **access fault trap handler** for resolving hardware-detected memory management exceptions and making virtual pages resident on behalf of a process.
+  - Six **key top-level routines**, each running in one of six different kernel-mode threads in the `System` process:
+    - **Balance set manager** (`KeBalanceSetManager`, priority 16). It calls an inner routine, the **working set manager** (`MmWorkingSetManager`), once per second as well as when free memory falls below a certain threshold. The working set manager drives the overall memory management policies, such as **working set trimming, aging, and modified page writing**.
+    - **Process/stack swapper** (`KeSwapProcessOrStack`, priority 23) performs both process and kernel thread **stack inswapping** and **outswapping**. The balance set manager and the thread-scheduling code in the kernel awaken this thread when an inswap or outswap operation needs to take place.
+    - **Modified page writer** (`MiModifiedPageWriter`, priority 17) writes **dirty pages** on the modified list back to the appropriate paging files. This thread is awakened when the size of the modified list needs to be reduced.
+    - **Mapped page writer** (`MiMappedPageWriter`, priority 17) writes dirty pages in mapped files to disk (or remote storage). It is awakened when the size of the modified list needs to be reduced or if pages for mapped files have been on the modified list for more than 5 minutes. This second modified page writer thread is necessary because it can generate page faults that result in requests for free pages. If there were no free pages and there was only one modified page writer thread, the system could deadlock waiting for free pages.
+    - **Segment dereference thread** (`MiDereferenceSegmentThread`, priority 18) is responsible for cache reduction as well as for page file growth and shrinkage. (For example, if there is no VAS for paged pool growth, this thread trims the page cache so that the paged pool used to anchor it can be freed for reuse.)
+    - **Zero page thread** (`MmZeroPageThread`, base priority 0) zeroes out pages on the free list so that a cache of zero pages is available to satisfy future demand-zero page faults. Unlike the other routines described here, this routine is not a top-level thread function but is called by the top-level thread routine Phase1Initialization. MmZeroPageThread never returns to its caller, so in effect the Phase 1 Initialization thread becomes the zero page thread by calling this routine. Memory zeroing in some cases is done by a faster function called `MiZeroInParallel`.
 
-#### Internal Synchronization
+### Internal Synchronization
 
-- the memory manager is __fully reentrant__ and supports simultaneous execution on multiprocessor systems.
+- the memory manager is **fully reentrant** and supports simultaneous execution on multiprocessor systems.
 - achieved by using several different internal synchronization mechanisms, such as spinlocks, to control access to its own internal data structures. Some of theses accesses are:
-    - Dynamically allocated portions of the system VAS
-    - System working sets
-    - Kernel memory pools
-    - The list of loaded drivers
-    - The list of paging files
-    - Physical memory lists
-    - Image base randomization (ASLR) structures
-    - Each individual entry in the page frame number (PFN) database.
+  - Dynamically allocated portions of the system VAS
+  - System working sets
+  - Kernel memory pools
+  - The list of loaded drivers
+  - The list of paging files
+  - Physical memory lists
+  - Image base randomization (ASLR) structures
+  - Each individual entry in the page frame number (PFN) database.
 
-#### Examining Memory Usage
+### Examining Memory Usage
 
-- __vmmap__, __rammap__ or __process explorer__ are nice tools to examine memory usage.
-    ```c
-        0: kd> !vm
-    Page File: \??\C:\pagefile.sys
-    Current:   4193784 Kb  Free Space:   4193780 Kb
-    Minimum:   4193784 Kb  Maximum:     12581352 Kb
+- **vmmap**, **rammap** or **process explorer** are nice tools to examine memory usage.
 
-    Physical Memory:          1048446 (    4193784 Kb)
-    Available Pages:           820027 (    3280108 Kb)
-    ResAvail Pages:            973277 (    3893108 Kb)
-    Locked IO Pages:                0 (          0 Kb)
-    Free System PTEs:        33494979 (  133979916 Kb)
-    Modified Pages:              4801 (      19204 Kb)
-    Modified PF Pages:           4771 (      19084 Kb)
-    Modified No Write Pages:        0 (          0 Kb)
-    NonPagedPool Usage:          9217 (      36868 Kb)
-    NonPagedPool Max:          774140 (    3096560 Kb)
-    PagedPool  0:               32876 (     131504 Kb)
-    PagedPool  1:                4124 (      16496 Kb)
-    PagedPool  2:                   0 (          0 Kb)
-    PagedPool  3:                   0 (          0 Kb)
-    PagedPool  4:                  57 (        228 Kb)
-    PagedPool Usage:            37057 (     148228 Kb)
-    PagedPool Maximum:       33554432 (  134217728 Kb)
-    Processor Commit:             274 (       1096 Kb)
-    Session Commit:              7647 (      30588 Kb)
-    Syspart SharedCommit 0
-    Shared Commit:               9386 (      37544 Kb)
-    Special Pool:                   0 (          0 Kb)
-    Kernel Stacks:               8220 (      32880 Kb)
-    Pages For MDLs:              2331 (       9324 Kb)
-    Pages For AWE:                  0 (          0 Kb)
-    NonPagedPool Commit:            0 (          0 Kb)
-    PagedPool Commit:           37108 (     148432 Kb)
-    Driver Commit:               3082 (      12328 Kb)
-    Boot Commit:                    0 (          0 Kb)
-    System PageTables:              0 (          0 Kb)
-    VAD/PageTable Bitmaps:       2214 (       8856 Kb)
-    ProcessLockedFilePages:         0 (          0 Kb)
-    Pagefile Hash Pages:            0 (          0 Kb)
-    Sum System Commit:          70262 (     281048 Kb)
-    Total Private:             107649 (     430596 Kb)
-    Misc/Transient Commit:      55573 (     222292 Kb)
-    Committed pages:           233484 (     933936 Kb)
-    Commit limit:             2096416 (    8385664 Kb)
-    ```
+  ```c
+      0: kd> !vm
+  Page File: \??\C:\pagefile.sys
+  Current:   4193784 Kb  Free Space:   4193780 Kb
+  Minimum:   4193784 Kb  Maximum:     12581352 Kb
 
-### Services Provided by the Memory Manager
+  Physical Memory:          1048446 (    4193784 Kb)
+  Available Pages:           820027 (    3280108 Kb)
+  ResAvail Pages:            973277 (    3893108 Kb)
+  Locked IO Pages:                0 (          0 Kb)
+  Free System PTEs:        33494979 (  133979916 Kb)
+  Modified Pages:              4801 (      19204 Kb)
+  Modified PF Pages:           4771 (      19084 Kb)
+  Modified No Write Pages:        0 (          0 Kb)
+  NonPagedPool Usage:          9217 (      36868 Kb)
+  NonPagedPool Max:          774140 (    3096560 Kb)
+  PagedPool  0:               32876 (     131504 Kb)
+  PagedPool  1:                4124 (      16496 Kb)
+  PagedPool  2:                   0 (          0 Kb)
+  PagedPool  3:                   0 (          0 Kb)
+  PagedPool  4:                  57 (        228 Kb)
+  PagedPool Usage:            37057 (     148228 Kb)
+  PagedPool Maximum:       33554432 (  134217728 Kb)
+  Processor Commit:             274 (       1096 Kb)
+  Session Commit:              7647 (      30588 Kb)
+  Syspart SharedCommit 0
+  Shared Commit:               9386 (      37544 Kb)
+  Special Pool:                   0 (          0 Kb)
+  Kernel Stacks:               8220 (      32880 Kb)
+  Pages For MDLs:              2331 (       9324 Kb)
+  Pages For AWE:                  0 (          0 Kb)
+  NonPagedPool Commit:            0 (          0 Kb)
+  PagedPool Commit:           37108 (     148432 Kb)
+  Driver Commit:               3082 (      12328 Kb)
+  Boot Commit:                    0 (          0 Kb)
+  System PageTables:              0 (          0 Kb)
+  VAD/PageTable Bitmaps:       2214 (       8856 Kb)
+  ProcessLockedFilePages:         0 (          0 Kb)
+  Pagefile Hash Pages:            0 (          0 Kb)
+  Sum System Commit:          70262 (     281048 Kb)
+  Total Private:             107649 (     430596 Kb)
+  Misc/Transient Commit:      55573 (     222292 Kb)
+  Committed pages:           233484 (     933936 Kb)
+  Commit limit:             2096416 (    8385664 Kb)
+  ```
+
+## Services Provided by the Memory Manager
 
 - the Windows API has three groups of functions for managing memory in applications:
-    - __heap functions__ (_Heapxxx_ and the older interfaces _Localxxx_ and _Globalxxx_, which internally make use of the _Heapxxx_ APIs), which may be used for allocations __smaller than a page__;
-    - virtual memory functions, which operate with page granularity (_Virtualxxx_);
-    - and __memory mapped file functions__ (`CreateFileMapping`, `CreateFileMappingNuma`, `MapViewOfFile`, `MapViewOfFileEx`, and `MapViewOfFileExNuma`).
+  - **heap functions** (_Heapxxx_ and the older interfaces _Localxxx_ and _Globalxxx_, which internally make use of the _Heapxxx_ APIs), which may be used for allocations **smaller than a page**;
+  - virtual memory functions, which operate with page granularity (_Virtualxxx_);
+  - and **memory mapped file functions** (`CreateFileMapping`, `CreateFileMappingNuma`, `MapViewOfFile`, `MapViewOfFileEx`, and `MapViewOfFileExNuma`).
 
-#### Large and Small Pages
+### Large and Small Pages
 
 - page size:
-    | Architecture | Small Page  Size| Large Page Size | Small Pages per Large Page|
-    |--------------|-----------------|-----------------|---------------------------|
-    |x86 | 4 KB|  4 MB (2 MB if PAE enabled) |1,024 (512 with PAE) |
-    |x64 | 4 KB  | 2 MB |  512 |
-    |IA64 | 8 KB | 16 MB  |2,048 |
-- primary advantage of large pages is __speed of address translation__ for references to other data within the large page.
-- first reference to any byte within a large page will cause the hardware’s __translation look-aside buffer TLB__  to have in its cache the information necessary to translate references to any other byte within the large page.
+  | Architecture | Small Page Size| Large Page Size | Small Pages per Large Page|
+  |--------------|-----------------|-----------------|---------------------------|
+  |x86 | 4 KB| 4 MB (2 MB if PAE enabled) |1,024 (512 with PAE) |
+  |x64 | 4 KB | 2 MB | 512 |
+  |IA64 | 8 KB | 16 MB |2,048 |
+- primary advantage of large pages is **speed of address translation** for references to other data within the large page.
+- first reference to any byte within a large page will cause the hardware’s **translation look-aside buffer TLB** to have in its cache the information necessary to translate references to any other byte within the large page.
 - to take advantage of large pages on systems with more than 2 GB of RAM, Windows maps with large pages:
-    - the __core OS images__ (`Ntoskrnl.exe` and `Hal.dll`)
-    - as well as __core OS data__ (such as the initial part of __nonpaged pool__ and the data structures that describe the state of each physical memory page).
-    - also automatically maps __I/O space requests__ (calls by device drivers to `MmMapIoSpace`) with large pages if the request is of satisfactory large page length and alignment.
-    - user mode apps can use `MEM_LARGE_PAGE` during mem alloc.
-    - drivers can set _LargePageDrivers_.
+  - the **core OS images** (`Ntoskrnl.exe` and `Hal.dll`)
+  - as well as **core OS data** (such as the initial part of **nonpaged pool** and the data structures that describe the state of each physical memory page).
+  - also automatically maps **I/O space requests** (calls by device drivers to `MmMapIoSpace`) with large pages if the request is of satisfactory large page length and alignment.
+  - user mode apps can use `MEM_LARGE_PAGE` during mem alloc.
+  - drivers can set _LargePageDrivers_.
 - few notes regarding large pages:
-    - allocating large pages could fail as freeing physical memory does become __fragmented__ as the system runs.
-    - tt is not possible to specify anything but __read/write__ access to large pages.
-    - the memory is also always __nonpageable__, because the page file system does not support large page.
-    - if a large page contains, for example, both __read-only code__ and __read/write data__, the page must be marked as __read/write__, which means that the code will be writable. This means that device drivers or other kernel-mode code could, as a result of a bug, modify what is supposed to be __read-only__ OS or driver code without causing a memory access violation.
+  - allocating large pages could fail as freeing physical memory does become **fragmented** as the system runs.
+  - tt is not possible to specify anything but **read/write** access to large pages.
+  - the memory is also always **nonpageable**, because the page file system does not support large page.
+  - if a large page contains, for example, both **read-only code** and **read/write data**, the page must be marked as **read/write**, which means that the code will be writable. This means that device drivers or other kernel-mode code could, as a result of a bug, modify what is supposed to be **read-only** OS or driver code without causing a memory access violation.
 
-#### Reserving and Committing Pages
+### Reserving and Committing Pages
 
-- pages in a process VAS are __free, reserved, committed, or shareable__.
-- __committed__ and __shareable__ pages are pages that, when accessed, ultimately translate to valid pages in physical memory.
-- __shared pages__ are usually mapped to a view of a section, which in turn is part or all of a file, but may instead represent a portion of page file space.
-    - all shared pages can potentially be shared with other processes.
-    - sections are exposed in the Windows API as __file mapping objects__.
+- pages in a process VAS are **free, reserved, committed, or shareable**.
+- **committed** and **shareable** pages are pages that, when accessed, ultimately translate to valid pages in physical memory.
+- **shared pages** are usually mapped to a view of a section, which in turn is part or all of a file, but may instead represent a portion of page file space.
+  - all shared pages can potentially be shared with other processes.
+  - sections are exposed in the Windows API as **file mapping objects**.
 
-#### Commit Limit
+### Commit Limit
 
-- __commitment or commit charge__; this is the first of the two numbers, which represents the total of all committed virtual memory in the system.
-- __system commit limit__ or simply the commit limit, on the amount of committed virtual memory that can exist at any one time.
-    - corresponds to the current total size of all paging files, plus the amount of RAM that is usable by the OS.
-    <p align="center"><img src="https://i.imgur.com/WwRPq6Y.png" width="400px" height="auto"></p>
+- **commitment or commit charge**; this is the first of the two numbers, which represents the total of all committed virtual memory in the system.
+- **system commit limit** or simply the commit limit, on the amount of committed virtual memory that can exist at any one time.
+  - corresponds to the current total size of all paging files, plus the amount of RAM that is usable by the OS.
+  <p align="center"><img src="https://i.imgur.com/WwRPq6Y.png" width="400px" height="auto"></p>
 
-#### Locking Memory
+### Locking Memory
 
 - pages can be locked in memory in two ways:
-    - Windows applications can call the `VirtualLock` function to lock pages in their process working set.
-        - pages locked using this mechanism remain in memory until explicitly unlocked or until the process that locked them terminates.
-        - the number of pages a process can lock __can’t exceed its minimum working set size minus eight pages__.
-        - therefore, if a process needs to lock more pages, it can increase its working set minimum with the `SetProcessWorkingSetSizeEx`.
-    - device drivers can call the kernel-mode functions `MmProbeAndLockPages`, `MmLockPagableCodeSection`, `MmLockPagableDataSection`, or `MmLockPagableSectionByHandle`.
-        - pages locked using this mechanism remain in memory until explicitly unlocked.
-        - the last three of these APIs __enforce no quota__ on the number of pages that can be locked in memory because the resident available page charge is obtained when the driver first loads; this ensures that it can never cause a system crash due to overlocking.
-        - for the first API, quota charges must be obtained or the API will return a failure status.
+  - Windows applications can call the `VirtualLock` function to lock pages in their process working set.
+    - pages locked using this mechanism remain in memory until explicitly unlocked or until the process that locked them terminates.
+    - the number of pages a process can lock **can’t exceed its minimum working set size minus eight pages**.
+    - therefore, if a process needs to lock more pages, it can increase its working set minimum with the `SetProcessWorkingSetSizeEx`.
+  - device drivers can call the kernel-mode functions `MmProbeAndLockPages`, `MmLockPagableCodeSection`, `MmLockPagableDataSection`, or `MmLockPagableSectionByHandle`.
+    - pages locked using this mechanism remain in memory until explicitly unlocked.
+    - the last three of these APIs **enforce no quota** on the number of pages that can be locked in memory because the resident available page charge is obtained when the driver first loads; this ensures that it can never cause a system crash due to overlocking.
+    - for the first API, quota charges must be obtained or the API will return a failure status.
 
-#### Allocation Granularity
+### Allocation Granularity
 
-- Windows aligns __each region__ of reserved process address space to begin on an integral boundary defined by the value of the system allocation granularity, which can be retrieved from the Windows `GetSystemInfo` or `GetNativeSystemInfo` function.
-- this value is __64 KB__, a granularity that is used by the memory manager to efficiently allocate metadata (for example, VADs, bitmaps, and so on) to support various process operations.
-- Windows kernel-mode code isn’t subject to the same restrictions; it can reserve memory on a __single-page granularity__ (although this is not exposed to device drivers for the reasons detailed earlier).
-- Windows ensures that the __size and base__ of the region is a __multiple__ of the system page size, whatever that might be.
+- Windows aligns **each region** of reserved process address space to begin on an integral boundary defined by the value of the system allocation granularity, which can be retrieved from the Windows `GetSystemInfo` or `GetNativeSystemInfo` function.
+- this value is **64 KB**, a granularity that is used by the memory manager to efficiently allocate metadata (for example, VADs, bitmaps, and so on) to support various process operations.
+- Windows kernel-mode code isn’t subject to the same restrictions; it can reserve memory on a **single-page granularity** (although this is not exposed to device drivers for the reasons detailed earlier).
+- Windows ensures that the **size and base** of the region is a **multiple** of the system page size, whatever that might be.
 
-#### Shared Memory and Mapped Files
+### Shared Memory and Mapped Files
 
-- __shared memory__ can be defined as memory that is visible to more than one process or that is present in more than one process VAS.
--  for example, if two processes use the same DLL, it would make sense to load the referenced code pages for that DLL into physical memory __only once__ and share those pages between all processes that map the DLL. <p align="center"><img src="https://i.imgur.com/ORc9BlC.png" width="300px" height="auto"></p>
-- a __section object__ can be connected to an __open file on disk (called a mapped file)__ or __to committed memory (to provide shared memory)__.
-- sections mapped to committed memory are called __page-file-backed sections__ because the pages are written to the paging file (__as opposed to a mapped file__) if demands on physical memory require it.
-- as with any other empty page that is made visible to user mode (such as private committed pages), shared committed pages are __always zero-filled__ when they are first accessed to ensure that no sensitive data is ever leaked.
-- to create a section object, call the Windows `CreateFileMapping` or `CreateFileMappingNuma` function, specifying the file handle to map it to (or __INVALID_HANDLE_VALUE__ for a page-file-backed section).
-- a section object can refer to files that are __much larger__ than can fit in the address space of a process.
+- **shared memory** can be defined as memory that is visible to more than one process or that is present in more than one process VAS.
+- for example, if two processes use the same DLL, it would make sense to load the referenced code pages for that DLL into physical memory **only once** and share those pages between all processes that map the DLL. <p align="center"><img src="https://i.imgur.com/ORc9BlC.png" width="300px" height="auto"></p>
+- a **section object** can be connected to an **open file on disk (called a mapped file)** or **to committed memory (to provide shared memory)**.
+- sections mapped to committed memory are called **page-file-backed sections** because the pages are written to the paging file (**as opposed to a mapped file**) if demands on physical memory require it.
+- as with any other empty page that is made visible to user mode (such as private committed pages), shared committed pages are **always zero-filled** when they are first accessed to ensure that no sensitive data is ever leaked.
+- to create a section object, call the Windows `CreateFileMapping` or `CreateFileMappingNuma` function, specifying the file handle to map it to (or **INVALID_HANDLE_VALUE** for a page-file-backed section).
+- a section object can refer to files that are **much larger** than can fit in the address space of a process.
 - to access a very large section object, a process can map only the portion of the section object that it requires (called a view of the section) by calling the `MapViewOfFile`, `MapViewOfFileEx`, or `MapViewOfFileExNuma` function and then specifying the range to map.
-- mapping views permits processes to __conserve address space__ because only the views of the section object needed at the time must be mapped into memory.
+- mapping views permits processes to **conserve address space** because only the views of the section object needed at the time must be mapped into memory.
 
-#### Protecting Memory
+### Protecting Memory
 
 - Windows provides memory protection in four primary ways.
-    1. all __systemwide data structures__ and __memory pools used by kernel-mode__ system components can be accessed only while in __kernel__ mode.
-        - user-mode threads can’t access these pages
-        - if they attempt to do so, the hardware generates a fault, which in turn the memory manager reports to the thread as an access violation.
-    2. each process has a separate, __private address space__, protected from being accessed by any thread belonging to another process.
-        - even shared memory is not really an exception to this because each process accesses the shared regions using addresses that are part of its __own VAS__.
-    3. in addition to the implicit protection virtual-to-physical address translation offers, all processors supported by Windows provide some form of __hardware-controlled memory protection__ (such as read/write, read-only, and so on).
-    4. shared memory section objects have standard Windows __ACLs__ that are checked when processes attempt to open them, thus limiting access of shared memory to those processes with the proper rights.
+  1. all **systemwide data structures** and **memory pools used by kernel-mode** system components can be accessed only while in **kernel** mode.
+     - user-mode threads can’t access these pages
+     - if they attempt to do so, the hardware generates a fault, which in turn the memory manager reports to the thread as an access violation.
+  2. each process has a separate, **private address space**, protected from being accessed by any thread belonging to another process.
+     - even shared memory is not really an exception to this because each process accesses the shared regions using addresses that are part of its **own VAS**.
+  3. in addition to the implicit protection virtual-to-physical address translation offers, all processors supported by Windows provide some form of **hardware-controlled memory protection** (such as read/write, read-only, and so on).
+  4. shared memory section objects have standard Windows **ACLs** that are checked when processes attempt to open them, thus limiting access of shared memory to those processes with the proper rights.
 
-#### No Execute Page Protection
+### No Execute Page Protection
 
-- __No execute__ page protection (also referred to as __data execution prevention (DEP)__) causes an attempt to transfer control to an instruction in a page marked as “no execute” to generate an access fault.
-    - prevent stack-based overflows
-    - catch poorly written programs that don’t correctly set permissions on pages from which they intend to execute code.
+- **No execute** page protection (also referred to as **data execution prevention (DEP)**) causes an attempt to transfer control to an instruction in a page marked as “no execute” to generate an access fault.
+  - prevent stack-based overflows
+  - catch poorly written programs that don’t correctly set permissions on pages from which they intend to execute code.
 - in a illegal reference:
-    - in kernel, fails with `ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY` bugcheck code.
-    - in user mode, fails with `STATUS_ACCESS_VIOLATION` exception.
+  - in kernel, fails with `ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY` bugcheck code.
+  - in user mode, fails with `STATUS_ACCESS_VIOLATION` exception.
 - on 32-bit x86 systems that support DEP, bit 63 in the page table entry (PTE) is used to mark a page as nonexecutable.
-    - DEP feature is available only when the processor is running in __Physical Address Extension (PAE)__ mode.
-    - requires loading the PAE kernel `%SystemRoot%\System32\Ntkrnlpa.exe`.
-    - the OS loader automatically loads the PAE kernel on 32-bit systems that support hardware DEP.
-    - applied only to __thread stacks__ and __usermode pages__, not to paged pool and session pool.
-    - processes depends on the value of the BCD nx option (OptIn, OptOut, AlwaysOn, AlwaysOff)
+  - DEP feature is available only when the processor is running in **Physical Address Extension (PAE)** mode.
+  - requires loading the PAE kernel `%SystemRoot%\System32\Ntkrnlpa.exe`.
+  - the OS loader automatically loads the PAE kernel on 32-bit systems that support hardware DEP.
+  - applied only to **thread stacks** and **usermode pages**, not to paged pool and session pool.
+  - processes depends on the value of the BCD nx option (OptIn, OptOut, AlwaysOn, AlwaysOff)
 - on 64-bit versions of Windows,:
-    - execution protection is __always applied to all 64-bit processes and device drivers__.
-    - can be disabled only by setting the nx BCD option to _AlwaysOff_.
-    - applied to __thread stacks__ (both user and kernel mode), __usermode pages__ not specifically marked as __executable__, __kernel paged pool__, and __kernel session pool__.
-- on Windows client versions (both 64-bit and 32-bit) execution protection for 32-bit processes is configured by default to apply only to __core Windows operating system executables (OptIn)__.
+  - execution protection is **always applied to all 64-bit processes and device drivers**.
+  - can be disabled only by setting the nx BCD option to _AlwaysOff_.
+  - applied to **thread stacks** (both user and kernel mode), **usermode pages** not specifically marked as **executable**, **kernel paged pool**, and **kernel session pool**.
+- on Windows client versions (both 64-bit and 32-bit) execution protection for 32-bit processes is configured by default to apply only to **core Windows operating system executables (OptIn)**.
 - even if you force DEP to be enabled, there are still other methods through which applications can disable DEP for their own image:
-    - image loader will verify the signature of the executable against known __copy-protection mechanisms__ (such as SafeDisc and SecuROM) and disable execution protection to provide compatibility with older copy protected software such as computer games.
+  - image loader will verify the signature of the executable against known **copy-protection mechanisms** (such as SafeDisc and SecuROM) and disable execution protection to provide compatibility with older copy protected software such as computer games.
 - if the system is in _OptIn_ or _OptOut_ mode and executing a 32-bit process, the `SetProcessDEPPolicy` function allows a process to dynamically disable DEP or to permanently enable it.
 
 #### Software Data Execution Prevention
 
-- for older processors that do not support hardware no execute protection, Windows supports limited __software DEP__.
-    - reduces SEH exploits.
-    - if image is not built with __/SAFESEH__, software DEP guards against SEH exploits with __Structured Exception Handler Overwrite Protection (SEHOP)__.
-    - __ALSR__ make it harder to know the location of the function pointed to by the symbolic exception registration record.
+- for older processors that do not support hardware no execute protection, Windows supports limited **software DEP**.
+  - reduces SEH exploits.
+  - if image is not built with **/SAFESEH**, software DEP guards against SEH exploits with **Structured Exception Handler Overwrite Protection (SEHOP)**.
+  - **ALSR** make it harder to know the location of the function pointed to by the symbolic exception registration record.
 - to futher mitiguate again SEH exploits when /SAFESEH is not present:
-    - a mechanism called __Image Dispatch Mitigation__ ensures that the SEH handler is located within the same image section as the function that raised an exception, which is normally the case for most programs (although not necessarily, since some DLLs might have exception handlers that were set up by the main executable, which is why this mitigation is off by default).
-    - Executable Dispatch Mitigation further makes sure that the SEH handler is located within an executable page—a less strong requirement than Image Dispatch Mitigation, but one with fewer compatibility issues.
+  - a mechanism called **Image Dispatch Mitigation** ensures that the SEH handler is located within the same image section as the function that raised an exception, which is normally the case for most programs (although not necessarily, since some DLLs might have exception handlers that were set up by the main executable, which is why this mitigation is off by default).
+  - Executable Dispatch Mitigation further makes sure that the SEH handler is located within an executable page—a less strong requirement than Image Dispatch Mitigation, but one with fewer compatibility issues.
 - two other methods for software DEP that the system implements are:
-    - __stack cookies__: relies on the compiler to insert special code at the beginning and end of each potentially exploitable function.
-        - the code saves a special numerical value (the cookie) on the stack on entry and validates the cookie’s value before returning to the caller saved on the stack.
-        - the cookie value is computed for each boot when executing the first user-mode thread, and it is saved in the `KUSER_SHARED_DATA` structure. The image loader reads this value and initializes it when a process starts executing in user mode.
-    - the cookie value that is calculated is also saved for use with the `EncodeSystemPointer` and `DecodeSystemPointer` APIs, which implement pointer encoding
-        - static pointers that are dynamically called runs the risk of having malicious code __overwrite the pointer values__ with code that the malware controls. 
-        -  These APIs provide similar protection but with a __per-process cookie__ (created on demand) instead of a __per-system cookie__.
+  - **stack cookies**: relies on the compiler to insert special code at the beginning and end of each potentially exploitable function.
+    - the code saves a special numerical value (the cookie) on the stack on entry and validates the cookie’s value before returning to the caller saved on the stack.
+    - the cookie value is computed for each boot when executing the first user-mode thread, and it is saved in the `KUSER_SHARED_DATA` structure. The image loader reads this value and initializes it when a process starts executing in user mode.
+  - the cookie value that is calculated is also saved for use with the `EncodeSystemPointer` and `DecodeSystemPointer` APIs, which implement pointer encoding
+    - static pointers that are dynamically called runs the risk of having malicious code **overwrite the pointer values** with code that the malware controls.
+    - These APIs provide similar protection but with a **per-process cookie** (created on demand) instead of a **per-system cookie**.
 
-#### Copy-on-Write
+### Copy-on-Write
 
 - copy-on-write page protection is an optimization the memory manager uses to conserve physical memory.
 - defers making a copy of the pages until the page is written to.
 - two processes are sharing three pages, each marked copy-on-write, but neither of the two processes has attempted to modify any data on the pages.
- <p align="center"><img src="https://i.imgur.com/qbiqSC3.png" width="400px" height="auto"></p>
-- it a thread in either process writes to a page, a memory management fault is generated. 
-    - memory manager sees that the write is to a copy-on-write page,
-    - it allocates a new read/write page in physical memory,
-    - copies the contents of the original page to the new page
-    - updates the corresponding page-mapping information in this process to point to the new location,
-    - the newly copied page is now private to the process that did the writing and isn’t visible to the other process still sharing the copy-on-write page.
-    <p align="center"><img src="https://i.imgur.com/Hx0IPIE.png" width="400px" height="auto"></p>
+<p align="center"><img src="https://i.imgur.com/qbiqSC3.png" width="400px" height="auto"></p>
+- it a thread in either process writes to a page, a memory management fault is generated.
+  - memory manager sees that the write is to a copy-on-write page,
+  - it allocates a new read/write page in physical memory,
+  - copies the contents of the original page to the new page
+  - updates the corresponding page-mapping information in this process to point to the new location,
+  - the newly copied page is now private to the process that did the writing and isn’t visible to the other process still sharing the copy-on-write page.
+  <p align="center"><img src="https://i.imgur.com/Hx0IPIE.png" width="400px" height="auto"></p>
 
-#### Address Windowing Extensions
+### Address Windowing Extensions
 
-- an app that needs to make more than 2 GB (or 3 GB) of data easily available in a single process could do so via __file mapping__, remapping a part of its address space into various portions of a large file.
-- Windows provides a set of functions called __Address Windowing Extensions (AWE)__ to allow a 32-bits process to allocate more physical memory than can be represented in its VAS.
+- an app that needs to make more than 2 GB (or 3 GB) of data easily available in a single process could do so via **file mapping**, remapping a part of its address space into various portions of a large file.
+- Windows provides a set of functions called **Address Windowing Extensions (AWE)** to allow a 32-bits process to allocate more physical memory than can be represented in its VAS.
 - it then can access the physical memory by mapping a portion of its VAS into selected portions of the physical memory at various times.
 - allocating and using memory via the AWE functions is done in three steps:
-    1. allocating the physical memory to be used:  `AllocateUserPhysicalPages` or `AllocateUserPhysicalPagesNuma`.
-    2. creating one or more regions of VAS to act as windows to map views of the physical memory. The application uses the Win32 `VirtualAlloc(Ex)`, or `VirtualAllocExNuma` function with the __MEM_PHYSICAL__ flag.
-    3. to actually use the memory, the app uses `MapUserPhysicalPages` or `MapUserPhysicalPagesScatter` to map a portion of the physical region allocated in step 1 into one of the virtual regions, or windows, allocated in step 2.
-    <p align="center"><img src="https://i.imgur.com/UD6vywq.png" width="450px" height="auto"></p>
+  1. allocating the physical memory to be used: `AllocateUserPhysicalPages` or `AllocateUserPhysicalPagesNuma`.
+  2. creating one or more regions of VAS to act as windows to map views of the physical memory. The application uses the Win32 `VirtualAlloc(Ex)`, or `VirtualAllocExNuma` function with the **MEM_PHYSICAL** flag.
+  3. to actually use the memory, the app uses `MapUserPhysicalPages` or `MapUserPhysicalPagesScatter` to map a portion of the physical region allocated in step 1 into one of the virtual regions, or windows, allocated in step 2.
+  <p align="center"><img src="https://i.imgur.com/UD6vywq.png" width="450px" height="auto"></p>
 
-### Kernel-Mode Heaps (System Memory Pools)
+## Kernel-Mode Heaps (System Memory Pools)
 
 - at system initialization, the memory manager creates two dynamically sized memory pools, or heaps, that most kernel-mode components use to allocate system memory:
-    - __nonpaged pool__:  consists of ranges of system virtual addresses that are guaranteed to reside in physical memory at all times + can be accessed from any IRQL.
-    - __paged pool__:  a region of virtual memory in system space that can be paged into and out of the system. Device drivers that don’t need to access the memory from DPC/dispatch level or above can use paged pool. It is accessible from any process context.
-- systems start with __four paged pools__ and __one nonpaged pool__; more are created, up to a maximum of __64__, depending on the number of NUMA nodes on the system.
-- in addition to paged/nonpaged pool, there is a pool region in __session space__, which is used for data that is common to all processes in the session.
-- also, a __special pool__:  allocations from special pool are surrounded by pages marked as no-access to help isolate problems in code that accesses memory before or after the region of pool it allocated.
+  - **nonpaged pool**: consists of ranges of system virtual addresses that are guaranteed to reside in physical memory at all times + can be accessed from any IRQL.
+  - **paged pool**: a region of virtual memory in system space that can be paged into and out of the system. Device drivers that don’t need to access the memory from DPC/dispatch level or above can use paged pool. It is accessible from any process context.
+- systems start with **four paged pools** and **one nonpaged pool**; more are created, up to a maximum of **64**, depending on the number of NUMA nodes on the system.
+- in addition to paged/nonpaged pool, there is a pool region in **session space**, which is used for data that is common to all processes in the session.
+- also, a **special pool**: allocations from special pool are surrounded by pages marked as no-access to help isolate problems in code that accesses memory before or after the region of pool it allocated.
 
-#### Pool Sizes
+### Pool Sizes
 
 - initial size: 3% of ram, if less than 40 MB, use 40 MB insted as long as 10% of RAM results in more than 40MB; otherwise 10 percent of RAM is chosen as a minimum.
 
-|Pool Type | Maximum on 32-Bit | Maximum on 64-Bit Systems |
-|----------|-------------------|---------------------------|
-|Nonpaged | 75% of physical memory or 2 GB, whichever is smaller | 75% of physical memory or 128 GB, whichever is smaller|
-| Paged | 2 GB | 128 GB |
+| Pool Type | Maximum on 32-Bit                                    | Maximum on 64-Bit Systems                              |
+| --------- | ---------------------------------------------------- | ------------------------------------------------------ |
+| Nonpaged  | 75% of physical memory or 2 GB, whichever is smaller | 75% of physical memory or 128 GB, whichever is smaller |
+| Paged     | 2 GB                                                 | 128 GB                                                 |
 
 ```c
 Page File: \??\C:\pagefile.sys
@@ -296,13 +297,14 @@ Commit limit:             2096416 (    8385664 Kb)
 ```
 
 - use _poolmon_ to monitor pool usage; or:
+
 ```c
  kd> !poolused 2
 
 *** CacheSize too low - increasing to 128 MB
 
-Max cache size is       : 134217728 bytes (0x20000 KB) 
-Total memory in cache   : 157892 bytes (0x9b KB) 
+Max cache size is       : 134217728 bytes (0x20000 KB)
+Total memory in cache   : 157892 bytes (0x9b KB)
 Number of regions cached: 292
 2257 full reads broken into 2626 partial reads
     counts: 2241 cached/385 uncached, 85.34% cached
@@ -341,11 +343,12 @@ Number of regions cached: 292
 
 ### Look-Aside Lists
 
-- Windows provides a fast memory allocation mechanism called __look-aside lists__.
+- Windows provides a fast memory allocation mechanism called **look-aside lists**.
 - the difference between pools and look-aside lists:
-    - general pool allocations can __vary__ in size, a look-aside list contains only __fixed-sized__ blocks.
-    - although the general pools are more flexible in terms of what they can supply, look-aside lists are __faster__ because they don’t use any __spinlocks__.
+  - general pool allocations can **vary** in size, a look-aside list contains only **fixed-sized** blocks.
+  - although the general pools are more flexible in terms of what they can supply, look-aside lists are **faster** because they don’t use any **spinlocks**.
 - contents and sizes of the various system look-aside lists:
+
 ```c
 1: kd> !lookaside
 
@@ -372,61 +375,62 @@ Total Paged currently allocated for above lists    =        0
 Total Paged potential for above lists              =   367832
 ```
 
-### Heap Manager
+## Heap Manager
 
-- manages allocations inside __larger memory areas__ reserved using the page granularity memory allocation functions.
-- the allocation granularity in the heap manager is relatively small: __8 bytes__ on 32-bit systems, and __16 bytes__ on 64-bit. systems.
-- legacy APIs (prefixed with either __Local__ or __Global__) are provided to support older Windows applications, which also internally call the heap manager, using some of its specialized interfaces to support legacy behavior.
+- manages allocations inside **larger memory areas** reserved using the page granularity memory allocation functions.
+- the allocation granularity in the heap manager is relatively small: **8 bytes** on 32-bit systems, and **16 bytes** on 64-bit. systems.
+- legacy APIs (prefixed with either **Local** or **Global**) are provided to support older Windows applications, which also internally call the heap manager, using some of its specialized interfaces to support legacy behavior.
 
-#### Types of Heaps
+### Types of Heaps
 
-- each process has at least one heap: the __default process heap__.
+- each process has at least one heap: the **default process heap**.
 - defaults to 1 MB in size, but it can be made bigger by using the `/HEAP` linker flag
 - this size is just the initial reserve, however—it will expand automatically as needed.
-- processes can also create additional __private heaps__ with the `HeapCreate`.
+- processes can also create additional **private heaps** with the `HeapCreate`.
 
-#### Heap Manager Structure
+### Heap Manager Structure
 
-- the heap manager is structured in two layers: an __optional front-end layer__ and the __core heap__.
+- the heap manager is structured in two layers: an **optional front-end layer** and the **core heap**.
 - the core heap handles the basic functionality and is mostly common across the usermode and kernel-mode heap implementations.
 - the core functionality includes the management of blocks inside segments, the management of the segments, policies for extending the heap, committing and decommitting memory, and management of the large blocks. <p align="center"><img src="https://i.imgur.com/pIABTFh.png" width="450px" height="auto"></p>
 - for user-mode heaps only, an optional front-end heap layer can exist on top of the existing core functionality.
-- the only front-end supported on Windows is the __Low Fragmentation Heap (LFH)__. Only one front-end layer can be used for one heap at one time.
+- the only front-end supported on Windows is the **Low Fragmentation Heap (LFH)**. Only one front-end layer can be used for one heap at one time.
 
-#### Heap Synchronization
+### Heap Synchronization
 
-- the heap manager supports __concurrent access__ from multiple threads by default.
-- however, if a process is __single threaded__ or uses an external mechanism for __synchronization__, it can tell the heap manager to avoid the overhead of synchronization by specifying `HEAP_NO_SERIALIZE` either at heap creation or on a per-allocation basis.
+- the heap manager supports **concurrent access** from multiple threads by default.
+- however, if a process is **single threaded** or uses an external mechanism for **synchronization**, it can tell the heap manager to avoid the overhead of synchronization by specifying `HEAP_NO_SERIALIZE` either at heap creation or on a per-allocation basis.
 
-#### The Low Fragmentation Heap
+### The Low Fragmentation Heap
 
 - many Windows apps have relatively small heap memory usage (~ less than 1 MB).
-    - for this class of apps, the heap manager’s best-fit policy helps keep a low memory footprint for each process.
-    - however, this strategy does not scale for __large processes__ and __multiprocessor__ machines.
-    - in these cases, memory available for heap usage might be reduced as a result of __heap fragmentation__.
-    - performance can suffer in scenarios where only certain sizes are often used concurrently from different threads scheduled to run on different processors.
-    - this happens because several processors need to modify the same memory location (i.e the head of the look-aside list for that particular size) at the same time, thus causing significant contention for the corresponding cache line.
-- LFH avoids fragmentation by managing allocated blocks in predetermined different block-size ranges called __buckets__.
-- LFH chooses the bucket that maps to the __smallest block__ large enough to hold the required size.
+  - for this class of apps, the heap manager’s best-fit policy helps keep a low memory footprint for each process.
+  - however, this strategy does not scale for **large processes** and **multiprocessor** machines.
+  - in these cases, memory available for heap usage might be reduced as a result of **heap fragmentation**.
+  - performance can suffer in scenarios where only certain sizes are often used concurrently from different threads scheduled to run on different processors.
+  - this happens because several processors need to modify the same memory location (i.e the head of the look-aside list for that particular size) at the same time, thus causing significant contention for the corresponding cache line.
+- LFH avoids fragmentation by managing allocated blocks in predetermined different block-size ranges called **buckets**.
+- LFH chooses the bucket that maps to the **smallest block** large enough to hold the required size.
 
-|Buckets |Granularity | Range |
-|--------|------------|-------|
-|1–32 | 8 | 1–256 |
-|33–48 | 16 | 257–512 |
-|49–64 |32 | 513–1,024 |
-|65–80 | 64  |1,025–2,048 |
-|81–96 | 128 | 2,049–4,096 |
-|97–112  |256 | 4,097–8,194 |
-|113–128  |512 | 8,195–16,384 |
+| Buckets | Granularity | Range        |
+| ------- | ----------- | ------------ |
+| 1–32    | 8           | 1–256        |
+| 33–48   | 16          | 257–512      |
+| 49–64   | 32          | 513–1,024    |
+| 65–80   | 64          | 1,025–2,048  |
+| 81–96   | 128         | 2,049–4,096  |
+| 97–112  | 256         | 4,097–8,194  |
+| 113–128 | 512         | 8,195–16,384 |
 
-#### Heap Security Features
+### Heap Security Features
 
 - heap manager have some techniques to minimize heap-based exploits:
-    - metadata used by the heap for internal management is packed with high degree of randomization
-    - blocks are subjects to integrity check to the header to detect buffer overruns.
-    - randomization of the base address (or handle).
+  - metadata used by the heap for internal management is packed with high degree of randomization
+  - blocks are subjects to integrity check to the header to detect buffer overruns.
+  - randomization of the base address (or handle).
 - by using `HeapSetInformation` with _HeapEnableTerminationOnCorruption_ class, a process can opt in for an automatic termination in case if anomalies.
 - dump metadata fields from a heap block:
+
 ```c
 0:000> !heap -i 001a0000
 Heap context set to the heap 0x001a0000
@@ -444,82 +448,85 @@ Previous block : 0x001e2508
 Next block : 0x001e25a0
 ```
 
-#### Heap Debugging Features
+### Heap Debugging Features
 
 - the heap manager leverages the 8 bytes used to store internal metadata as a consistency checkpoint which helps detecting potential heap errors and bugs:
-    - __enable tail checking__: the end of the each block carries a signature that is checked when the block is released.
-    - __enable free checking__: free block is filled with a pattern that is checked at various points when the heap manager needs to access the block.
-    - __parameter checking__: extensive checking of the parameteres passed to the heap functions.
-    - __heap validation__ the entire heap is validated at each heap call.
-    - __heap tagging and strack traces support__: supports specifying tags for allocation and/or captures user-mode stack traces for the heap calls to help narrow the possible causes of a heap error.
+  - **enable tail checking**: the end of the each block carries a signature that is checked when the block is released.
+  - **enable free checking**: free block is filled with a pattern that is checked at various points when the heap manager needs to access the block.
+  - **parameter checking**: extensive checking of the parameteres passed to the heap functions.
+  - **heap validation** the entire heap is validated at each heap call.
+  - **heap tagging and strack traces support**: supports specifying tags for allocation and/or captures user-mode stack traces for the heap calls to help narrow the possible causes of a heap error.
 
-#### Pageheap
+### Pageheap
 
-- because the tail and free checking might be discovering corruptions that occurred well before the problem was detected, an additional heap debugging capability, called __pageheap__, is provided that directs all or part of the heap calls to a different heap manager.
+- because the tail and free checking might be discovering corruptions that occurred well before the problem was detected, an additional heap debugging capability, called **pageheap**, is provided that directs all or part of the heap calls to a different heap manager.
 
-#### Fault Tolerant Heap
+### Fault Tolerant Heap
 
-- Windows includes a feature called the __fault tolerant heap (FTH)__ in an attempt to mitigate heap corruption problems.
+- Windows includes a feature called the **fault tolerant heap (FTH)** in an attempt to mitigate heap corruption problems.
 - FTH is implemented in two primary components:
-    - the detection component, or FTH server, and;
-    - the mitigation component, or FTH client.
+  - the detection component, or FTH server, and;
+  - the mitigation component, or FTH client.
 - the FTH client is an application compatibility shim, it intercepts the calls to the heap routines and redirects them to its own code. The FTH code implements a number of “mitigations” that attempt to allow the application to survive despite various heap-related errors.
 - the activity of the fault tolerant heap can be observed in the Event Viewer.
 
-### Virtual Address Space Layouts
+## Virtual Address Space Layouts
 
 - three main types of data are mapped into the VAS in Windows:
-    - per-process private code and data
-    - sessionwide code and data
-    - systemwide code and data.
-- the information that describes the process VAS, called __page tables__.
-    - each process bas its own set of page tables.
-    - they are stored in kernel mode.
-- __session space__ contains information that is common to each session:
-    - consists of the processes and other system objects (such as the window station, desktops, and windows) that represent a single user’s logon session
-    - each session has a session-specific paged pool area used by Win32k.sys to allocate session-private GUI data structures.
-    - each session has its own copy of the Windows subsystem process (Csrss.exe) and logon process (Winlogon.exe).
-- __system space__ contains global OS code and data structures visible by kernel-mode code regardless of which process is currently executing. System space consists of the following components:
-    - __system code__ contains the OS image, HAL, and device drivers used to boot the system.
-    - __nonpaged pool__: nonpageable system memory heap.
-    - __paged pool__: pageable system memory heap.
-    - __system cache__: VAS used to map files open in the system cache.
-    - __system page table entries (PTEs)__: pool of system PTEs used to map system pages such as I/O space, kernel stacks, and memory descriptor lists.
-    - __system working set lists__: the working set list data structures that describe the three system working sets (the system cache working set, the paged pool working set, and the system PTEs working set).
-    - __system mapped views__: used to map Win32k.sys, the loadable kernel-mode part of the Windows subsystem, as well as kernel-mode graphics drivers it uses.
-    - __hyperspace__: a special region used to map the process working set list and other per-process data that doesn’t need to be accessible in arbitrary process context. Hyperspace is also used to temporarily map physical pages into the system space. One example of this is invalidating page table entries in page tables of processes other than the current one (such as when a page is removed from the standby list).
-    - __crash dump information__: reserved to record information about the state of a system crash.
-    - __HAL__ usage System memory reserved for HAL-specific structures.
+  - per-process private code and data
+  - sessionwide code and data
+  - systemwide code and data.
+- the information that describes the process VAS, called **page tables**.
+  - each process bas its own set of page tables.
+  - they are stored in kernel mode.
+- **session space** contains information that is common to each session:
+  - consists of the processes and other system objects (such as the window station, desktops, and windows) that represent a single user’s logon session
+  - each session has a session-specific paged pool area used by Win32k.sys to allocate session-private GUI data structures.
+  - each session has its own copy of the Windows subsystem process (Csrss.exe) and logon process (Winlogon.exe).
+- **system space** contains global OS code and data structures visible by kernel-mode code regardless of which process is currently executing. System space consists of the following components:
+  - **system code** contains the OS image, HAL, and device drivers used to boot the system.
+  - **nonpaged pool**: nonpageable system memory heap.
+  - **paged pool**: pageable system memory heap.
+  - **system cache**: VAS used to map files open in the system cache.
+  - **system page table entries (PTEs)**: pool of system PTEs used to map system pages such as I/O space, kernel stacks, and memory descriptor lists.
+  - **system working set lists**: the working set list data structures that describe the three system working sets (the system cache working set, the paged pool working set, and the system PTEs working set).
+  - **system mapped views**: used to map Win32k.sys, the loadable kernel-mode part of the Windows subsystem, as well as kernel-mode graphics drivers it uses.
+  - **hyperspace**: a special region used to map the process working set list and other per-process data that doesn’t need to be accessible in arbitrary process context. Hyperspace is also used to temporarily map physical pages into the system space. One example of this is invalidating page table entries in page tables of processes other than the current one (such as when a page is removed from the standby list).
+  - **crash dump information**: reserved to record information about the state of a system crash.
+  - **HAL** usage System memory reserved for HAL-specific structures.
 
-#### x86 Address Space Layouts
+### x86 Address Space Layouts
 
 - x86 virtual address space layouts: <p align="center"><img src="https://i.imgur.com/eb4oAzh.png" width="450px" height="auto"></p>
 
-#### x86 System Address Space Layout
+### x86 System Address Space Layout
 
-- 32-bit versions of Windows implement a __dynamic system address space__ layout by using a virtual address allocator.
-- many kernel-mode structures use dynamic address space allocation. These structures are therefore not necessarily __virtually contiguous__ with themselves:
-    - Nonpaged pool
-    - Special pool
-    - Paged pool
-    - System page table entries (PTEs)
-    - System mapped views
-    - File system cache
-    - File system structures (metadata)
-    - Session space
+- 32-bit versions of Windows implement a **dynamic system address space** layout by using a virtual address allocator.
+- many kernel-mode structures use dynamic address space allocation. These structures are therefore not necessarily **virtually contiguous** with themselves:
+  - Nonpaged pool
+  - Special pool
+  - Paged pool
+  - System page table entries (PTEs)
+  - System mapped views
+  - File system cache
+  - File system structures (metadata)
+  - Session space
 
-#### x86 session space
+### x86 session space
 
-- for systems with __multiple__ sessions, the code and data unique to each session are mapped into system
-address space but __shared__ by the processes in that session. <p align="center"><img src="https://i.imgur.com/VmYnKuG.png" width="260px" height="auto"></p>
+- for systems with **multiple** sessions, the code and data unique to each session are mapped into system
+  address space but **shared** by the processes in that session. <p align="center"><img src="https://i.imgur.com/VmYnKuG.png" width="260px" height="auto"></p>
 - you can list the active sessions with the `!session` command as follows:
+
 ```c
 lkd> !session
 Sessions on machine: 3
 Valid Sessions: 0 1 3
 Current Session 1
 ```
--  you can set the active session using the `!session –s` command and display the address of the session data structures and the processes in that session with the `!sprocess` command:
+
+- you can set the active session using the `!session –s` command and display the address of the session data structures and the processes in that session with the `!sprocess` command:
+
 ```c
 0: kd> !session -s 1
 Sessions on machine: 2
@@ -568,7 +575,9 @@ PROCESS fffffa800571bb00
     Image: vmtoolsd.exe
 ...
 ```
+
 - to view the details of the session, dump the `MM_SESSION_SPACE` structure using the dt command, as follows:
+
 ```c
 0: kd> dt nt!_MM_SESSION_SPACE fffff88004553000
    +0x000 ReferenceCount   : 0n17
@@ -621,6 +630,7 @@ PROCESS fffffa800571bb00
 ```
 
 - to view session space memory utilization:
+
 ```c
 0: kd> !vm 4
 Page File: \??\C:\pagefile.sys
@@ -642,10 +652,11 @@ Commit Usage:          324 Kb
 ...
 ```
 
-#### System Page Table Entries
+### System Page Table Entries
 
-- are used to dynamically map system pages such as __I/O space, kernel stacks__, and the mapping for __memory descriptor lists__.
+- are used to dynamically map system pages such as **I/O space, kernel stacks**, and the mapping for **memory descriptor lists**.
 - to see how many system PTEs are available:
+
 ```c
 0: kd> !sysptes
 System PTE Information
@@ -702,118 +713,123 @@ f0b75000 1 1 cpqasm2+0x2af67/cpqasm2+0x7847
 f0afa000 1 1 cpqasm2+0x2af67/cpqasm2+0x6d82
 ```
 
-#### 64-Bit Address Space Layouts
+### 64-Bit Address Space Layouts
 
-- theoretical 64-bit VAS is __16 exabytes__.
+- theoretical 64-bit VAS is **16 exabytes**.
 - unlike on x86 systems, where the default address space is divided in two parts, the 64-bit address is divided into a number of different size regions whose components match conceptually the portions of user, system, and session space:
 
-| Region| IA64 x64|
-|-------|---------|
-| Process Address Space| 7,152 GB | 8,192 GB |
-| System PTE Space| 128 GB | 128 GB|
-| System Cache| 1 TB | 1 TB|
-| Paged Pool| 128 GB| 128 GB|
-| Nonpaged Pool| 75% of physical memory | 75% of physical memory|
-- __large address space aware__ apps running under __Wow64__ will actually receive all __4__ GB of user address space available.
-- 64-bit applications linked __without__ `/LARGEADDRESSAWARE` are constrained to the first 2 GB of the process VAS, just like 32-bit applications.
+| Region                | IA64 x64               |
+| --------------------- | ---------------------- | ---------------------- |
+| Process Address Space | 7,152 GB               | 8,192 GB               |
+| System PTE Space      | 128 GB                 | 128 GB                 |
+| System Cache          | 1 TB                   | 1 TB                   |
+| Paged Pool            | 128 GB                 | 128 GB                 |
+| Nonpaged Pool         | 75% of physical memory | 75% of physical memory |
+
+- **large address space aware** apps running under **Wow64** will actually receive all **4** GB of user address space available.
+- 64-bit applications linked **without** `/LARGEADDRESSAWARE` are constrained to the first 2 GB of the process VAS, just like 32-bit applications.
 - The IA64 address space layout: <p align="center"><img src="https://i.imgur.com/G0ehzMF.png" height="auto"></p>
 - x64 address space layout: <p align="center"><img src="https://i.imgur.com/0QCpmWT.png" height="auto"></p>
 
-#### x64 Virtual Addressing Limitations
+### x64 Virtual Addressing Limitations
 
-- to simplify chip architecture and avoid unnecessary overhead, particularly in address translation, AMD’s and Intel’s current x64 processors implement only __256 TB__ of VAS.
-    - only the low-order 48 bits of a 64-bit virtual address are implemented.
-    - the high-order 16 bits (bits 48 through 63) must be set to the same value as the highest order implemented bit (bit 47), in a manner similar to sign extension in two’s complement arithmetic.
-    - an address that conforms to this rule is said to be a __canonical__ address.
+- to simplify chip architecture and avoid unnecessary overhead, particularly in address translation, AMD’s and Intel’s current x64 processors implement only **256 TB** of VAS.
+  - only the low-order 48 bits of a 64-bit virtual address are implemented.
+  - the high-order 16 bits (bits 48 through 63) must be set to the same value as the highest order implemented bit (bit 47), in a manner similar to sign extension in two’s complement arithmetic.
+  - an address that conforms to this rule is said to be a **canonical** address.
 
 #### Windows x64 16-TB Limitation
 
-- Windows on x64 has a further limitation: of the 256 TB of VAS available on x64 processors, Windows at present allows only the use of a little more than __16 TB__.
+- Windows on x64 has a further limitation: of the 256 TB of VAS available on x64 processors, Windows at present allows only the use of a little more than **16 TB**.
 - this is split into two 8-TB regions:
-    - a user mode, per-process region starting at 0 toward __0x000007FFFFFFFFFF__
-    - a kernel-mode, systemwide region starting at “all Fs” and working toward __0xFFFFF80000000000__ for most purposes.
+  - a user mode, per-process region starting at 0 toward **0x000007FFFFFFFFFF**
+  - a kernel-mode, systemwide region starting at “all Fs” and working toward **0xFFFFF80000000000** for most purposes.
 - a number of Windows mechanisms have made, and continue to make, assumptions about usable bits in addresses:
-    - __Pushlocks__, __fast references__, __Patchguard DPC contexts__, and __singly linked lists__ are common examples of data structures that use bits within a pointer for nonaddressing purposes.
-    - __singly linked lists__, combined with the lack of a CPU instruction in the original x64 CPUs required to “port” the data structure to 64-bit Windows, are responsible for this __memory addressing limit__ on Windows for x64.
+  - **Pushlocks**, **fast references**, **Patchguard DPC contexts**, and **singly linked lists** are common examples of data structures that use bits within a pointer for nonaddressing purposes.
+  - **singly linked lists**, combined with the lack of a CPU instruction in the original x64 CPUs required to “port” the data structure to 64-bit Windows, are responsible for this **memory addressing limit** on Windows for x64.
 - kernel-mode data structures that do not involve SLISTs are not limited to the 8-TB address space range. System page table entries, hyperspace, and the cache working set all occupy virtual addresses below 0xFFFFF80000000000 because these structures do not use SLISTs.
 
 #### Dynamic System Virtual Address Space Management
+
 #### System Virtual Address Space Quotas
-#### User Address Space Layout
+
+### User Address Space Layout
 
 - just as address space in the kernel is dynamic, the user address space is also built dynamically:
-    - addresses of the thread stacks, process heaps, and loaded images are dynamically computed (if its images support it) through a mechanism known as __Address Space Layout Randomization (ASLR)__.
+  - addresses of the thread stacks, process heaps, and loaded images are dynamically computed (if its images support it) through a mechanism known as **Address Space Layout Randomization (ASLR)**.
 - at the OS level, user address space is divided into a few well-defined regions of memory:
-    - the __executable and DLLs__ themselves are present as __memory mapped__ image files,
-    - followed by __the heap(s)__ of the process and the __stack(s)__ of its thread(s).
-    - apart from these regions (and some reserved system structures such as the __TEBs__ and __PEB__), all other memory allocations are run-time dependent and generated thanks to ASLR + DEP. <p align="center"><img src="https://i.imgur.com/BqhCCb0.png" height="auto"></p>
+  - the **executable and DLLs** themselves are present as **memory mapped** image files,
+  - followed by **the heap(s)** of the process and the **stack(s)** of its thread(s).
+  - apart from these regions (and some reserved system structures such as the **TEBs** and **PEB**), all other memory allocations are run-time dependent and generated thanks to ASLR + DEP. <p align="center"><img src="https://i.imgur.com/BqhCCb0.png" height="auto"></p>
 
 #### Image Randomization
 
 - for executables, the load offset is calculated by computing a delta value each time an executable is loaded.
-    - this value is a pseudo-random 8-bit number from __0x10000 to 0xFE0000__, calculated by taking the current processor’s time stamp counter (TSC), shifting it by four places, and then performing a division modulo 254 and adding 1 (so it can never load at the address in the PE header).
-    - this number is then multiplied by the allocation granularity of 64 KB.
-    - this delta is then __added__ to the executable’s __preferred load address__, creating one of 256 possible locations within 16 MB of the image address in the PE header.
-- for DLLs, computing the load offset begins with a __per-boot__, __systemwide__ value called the __image bias__, which is computed by `MiInitializeRelocations` and stored in `MiImageBias`.
-    - this value corresponds to the TSC of the current CPU when this function was called during the boot cycle, shifted and masked into an 8-bit value, which provides 256 possible values.
-    - this value is computed only __once per boot__ and __shared__ across the system to allow DLLs to remain shared in physical memory and __relocated only once__.
+  - this value is a pseudo-random 8-bit number from **0x10000 to 0xFE0000**, calculated by taking the current processor’s time stamp counter (TSC), shifting it by four places, and then performing a division modulo 254 and adding 1 (so it can never load at the address in the PE header).
+  - this number is then multiplied by the allocation granularity of 64 KB.
+  - this delta is then **added** to the executable’s **preferred load address**, creating one of 256 possible locations within 16 MB of the image address in the PE header.
+- for DLLs, computing the load offset begins with a **per-boot**, **systemwide** value called the **image bias**, which is computed by `MiInitializeRelocations` and stored in `MiImageBias`.
+  - this value corresponds to the TSC of the current CPU when this function was called during the boot cycle, shifted and masked into an 8-bit value, which provides 256 possible values.
+  - this value is computed only **once per boot** and **shared** across the system to allow DLLs to remain shared in physical memory and **relocated only once**.
 
 #### Stack Randomization
 
 - the next step in ASLR is to randomize the location of the initial thread’s stack (and, subsequently, of each new thread).
 - enabled unless the flag `StackRandomizationDisabled` was enabled for the process.
-- consists of first selecting one of 32 possible stack locations separated by either __64 KB__ or __256 KB__.
-- this base address is selected by finding the first appropriate free memory region and then choosing the *x*th available region, where *x* is once again generated based on the current processor’s TSC shifted and masked into a 5-bit value (which allows for 32 possible locations).
+- consists of first selecting one of 32 possible stack locations separated by either **64 KB** or **256 KB**.
+- this base address is selected by finding the first appropriate free memory region and then choosing the *x*th available region, where _x_ is once again generated based on the current processor’s TSC shifted and masked into a 5-bit value (which allows for 32 possible locations).
 - once this base address has been selected, a new TSC-derived value is calculated, this one 9 bits long. The value is then multiplied by 4 to maintain alignment, which means it can be as large as 2,048 bytes (half a page).
-- tt is __added__ to the __base address__ to obtain the __final stack base__.
+- tt is **added** to the **base address** to obtain the **final stack base**.
 
 #### Heap Randomization
 
 - ASLR randomizes the location of the initial process heap (and subsequent heaps) when created in user mode.
 - the `RtlCreateHeap` function uses another pseudo-random, TSC-derived value to determine the base address of the heap.
-- this value, 5 bits this time, is multiplied by __64 KB__ to generate the final base address, starting at 0, giving a possible range of __0x00000000 to 0x001F0000__ for the initial heap.
-- he range __before the heap base address__ is manually deallocated in an attempt to force an access violation if an attack is doing a brute-force sweep of the entire possible heap address range.
+- this value, 5 bits this time, is multiplied by **64 KB** to generate the final base address, starting at 0, giving a possible range of **0x00000000 to 0x001F0000** for the initial heap.
+- he range **before the heap base address** is manually deallocated in an attempt to force an access violation if an attack is doing a brute-force sweep of the entire possible heap address range.
 
 #### ASLR in Kernel Address Space
 
 - ASLR is also active in kernel address space.
-- there are __64__ possible load addresses for 32-bit drivers and __256__ for 64-bit drivers.
+- there are **64** possible load addresses for 32-bit drivers and **256** for 64-bit drivers.
 - relocating user-space images requires a significant amount of work area in kernel space, but if kernel space is tight, ASLR can use the user-mode address space of the System process for this work area.
 
+## Address Translation
 
-### Address Translation
+### x86 Virtual Address Translation
 
-#### x86 Virtual Address Translation
-
-- each page of VAS is associated with a system-space structure called a __page table entry (PTE)__, which contains the physical address to which the virtual one is mapped.
-- there may not even be __any PTEs__ for regions that have been marked as __reserved or committed__ but never __accessed__, because the page table itself might be allocated only when the first page fault occurs.
-- non-PAE x86 systems use a __two-level__ page table structure to translate virtual to physical addresses. A 32-bit virtual address mapped by a normal 4-KB page is interpreted as two fields:
-    - the __virtual page number__ and the byte within the page, called the __byte offset__.
-    - the virtual page number is further divided into two subfields, called the __page directory index__ and the __page table index__:
-    <p align="center"><img src="https://i.imgur.com/gyAWAAx.png"  height="auto"></p>
+- each page of VAS is associated with a system-space structure called a **page table entry (PTE)**, which contains the physical address to which the virtual one is mapped.
+- there may not even be **any PTEs** for regions that have been marked as **reserved or committed** but never **accessed**, because the page table itself might be allocated only when the first page fault occurs.
+- non-PAE x86 systems use a **two-level** page table structure to translate virtual to physical addresses. A 32-bit virtual address mapped by a normal 4-KB page is interpreted as two fields:
+  - the **virtual page number** and the byte within the page, called the **byte offset**.
+  - the virtual page number is further divided into two subfields, called the **page directory index** and the **page table index**:
+  <p align="center"><img src="https://i.imgur.com/gyAWAAx.png"  height="auto"></p>
 - the format of a physical address on an x86 non-PAE system is: <p align="center"><img src="https://i.imgur.com/K6xybX9.png"  height="auto"></p>
 - the byte offset does not participate in, and does not change as a result of, address translation. It is simply copied from the virtual address to the physical address.
 - translating a valid virtual address (x86 non-PAE): <p align="center"><img src="https://i.imgur.com/4RBL2h7.png"  height="auto"></p>
-- page tables can be __paged out__ or __not yet created__, and in those cases, the page table is first made resident before proceeding. If a flag in the PDE indicates that it describes a __large page__, then it simply contains the PFN of the target large page, and the rest of the virtual address is treated as the byte offset within the large page.
-- if the PTE’s valid bit is __clear__, this triggers a page fault. The OS’s memory management fault handler (pager) locates the page and tries to make it valid.
+- page tables can be **paged out** or **not yet created**, and in those cases, the page table is first made resident before proceeding. If a flag in the PDE indicates that it describes a **large page**, then it simply contains the PFN of the target large page, and the rest of the virtual address is treated as the byte offset within the large page.
+- if the PTE’s valid bit is **clear**, this triggers a page fault. The OS’s memory management fault handler (pager) locates the page and tries to make it valid.
 
 #### Page Directories
 
-- on non-PAE x86 systems, each process has a __single page directory__.
+- on non-PAE x86 systems, each process has a **single page directory**.
 - physical address of the process page directory is stored in the `KPROCESS` block.
-    - but it is also mapped virtually at address _0xC0300000_.
-- CPU obtains the location of the page directory from a privileged CPU register called __CR3__.
+  - but it is also mapped virtually at address _0xC0300000_.
+- CPU obtains the location of the page directory from a privileged CPU register called **CR3**.
 - is page aligned.
-- is composed of __page directory entries (PDEs)__, each of which is 4 bytes long.
-- page tables are created __on demand__, so the page directory for most processes points only to a small set of page tables.
+- is composed of **page directory entries (PDEs)**, each of which is 4 bytes long.
+- page tables are created **on demand**, so the page directory for most processes points only to a small set of page tables.
 - the physical address of the currently running process’s page directory:
+
 ```c
 lkd> !process -1 0
 PROCESS 857b3528 SessionId: 1 Cid: 0f70 Peb: 7ffdf000 ParentCid: 0818
 DirBase: 47c9b000 ObjectTable: b4c56c48 HandleCount: 226.
 Image: windbg.exe
 ```
+
 - to see the page directory’s virtual address for the PTE of a particular virtual address:
+
 ```c
 lkd> !pte 10004
 VA 00010004
@@ -821,27 +837,28 @@ PDE at C0300000 PTE at C0000040
 contains 6F06B867 contains 3EF8C847
 pfn 6f06b ---DA--UWEV pfn 3ef8c ---D---UWEV
 ```
-- the page tables that describe system space are __shared among all processes__.
+
+- the page tables that describe system space are **shared among all processes**.
 - and session space is shared only among processes in a session.
-- to avoid having multiple page tables describing the same virtual memory, when a process is created, the page directory entries that describe system space are __initialized to point to the existing__ system page tables.
-- if the process is part of a session, __session space page tables__ are also __shared__ by pointing the session space page directory entries to the existing session page tables.
+- to avoid having multiple page tables describing the same virtual memory, when a process is created, the page directory entries that describe system space are **initialized to point to the existing** system page tables.
+- if the process is part of a session, **session space page tables** are also **shared** by pointing the session space page directory entries to the existing session page tables.
 
 #### Page Tables and Page Table Entries
 
 - valid PTEs have two main fields: the page frame number (PFN) of the physical page containing the data or of the physical address of a page in memory, and some flags that describe the state and protection of the page: <p align="center"><img src="https://i.imgur.com/ebUANud.png"  height="auto"></p>
 - PTE Status and Protection Bits:
 
-| Name of Bit | Meaning|
-|-------------|--------|
-| Accessed | Page has been accessed.|
-| Cache disabled| Disables CPU caching for that page.|
-| Copy-on-write| Page is using copy-on-write|
-| Dirty | Page has been written to.|
-| Global| Translation applies to all processes. (For example, a translation buffer flush won’t affect this PTE.)|
-|  Large page | Indicates that the PDE maps a 4-MB page (or 2 MB on PAE systems). |
-| Owner | Indicates whether user-mode code can access the page or whether the page is limited to kernel-mode access.|
-| Prototype | The PTE is a prototype PTE, which is used as a template to describe shared memory associated with section objects.|
-| Valid | Indicates whether the translation maps to a page in physical memory.|
-| Write through | Marks the page as write-through or (if the processor supports the page attribute table)|
-| write-combined | This is typically used to map video frame buffer memory.|
-| Write | Indicates to the MMU whether the page is writable.|
+| Name of Bit    | Meaning                                                                                                            |
+| -------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Accessed       | Page has been accessed.                                                                                            |
+| Cache disabled | Disables CPU caching for that page.                                                                                |
+| Copy-on-write  | Page is using copy-on-write                                                                                        |
+| Dirty          | Page has been written to.                                                                                          |
+| Global         | Translation applies to all processes. (For example, a translation buffer flush won’t affect this PTE.)             |
+| Large page     | Indicates that the PDE maps a 4-MB page (or 2 MB on PAE systems).                                                  |
+| Owner          | Indicates whether user-mode code can access the page or whether the page is limited to kernel-mode access.         |
+| Prototype      | The PTE is a prototype PTE, which is used as a template to describe shared memory associated with section objects. |
+| Valid          | Indicates whether the translation maps to a page in physical memory.                                               |
+| Write through  | Marks the page as write-through or (if the processor supports the page attribute table)                            |
+| write-combined | This is typically used to map video frame buffer memory.                                                           |
+| Write          | Indicates to the MMU whether the page is writable.                                                                 |
