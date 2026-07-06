@@ -175,3 +175,25 @@ The **VAL** abstracts CPU virtualization differences across Intel, AMD, and ARM6
 The **Address Manager / AM** owns the mapping between a partition’s **guest physical address space / GPA**, called an **address domain**, and real **system physical memory**; older Hyper-V could use shadow page tables, but since Windows 8.1 it relies on hardware SLAT mechanisms such as Intel **EPT**, AMD **NPT**, and ARM64 stage-2 translation.
 
 After these subsystems are initialized, the hypervisor completes the boot processor’s `CPU_PLS` by allocating the hardware-dependent virtualization control structures, such as **VMCS** on Intel or **VMCB** on AMD, enables virtualization with the first **VMXON**-equivalent operation, and finally initializes the per-processor interrupt-mapping structures.
+
+### The creation of the root partition and the boot virtual processor
+
+After the hypervisor is initialized, its first major job is to create the **root partition** and its first virtual processor, the **BSP VP**, which is the VP used to resume the Windows boot process under Hyper-V control.
+
+Root partition creation follows roughly the same layered process as child partition creation: the **VM layer** configures maximum VTL **support**, assigns **partition privileges** according to type, and enables features according to the partition **compatibility** level, with the root partition receiving the maximum feature set; the **VP layer** initializes the virtualized CPUID state shared by all VPs in the partition and creates the hypervisor process backing the partition; and the **Address Manager** builds the initial GPA→SPA mapping, using EPT on Intel or NPT on AMD, with the root partition using identity mapping so its guest physical memory corresponds directly to system physical memory.
+
+Once **SynIC**, **IOMMU**, and **intercept shared pages** are configured, the hypervisor creates the root partition’s BSP VP, represented by a large **`VM_VP`** structure containing platform-dependent CPU state, register/debug/XSAVE/stack data, the VP private address space, a pointer to the backing hypervisor thread, a pointer to the physical CPU currently executing it, and an array of **`VM_VPLC`** structures tracking per-VTL state.
+
+<p align="center"><img src="./assets/VM_VP-data-structure.png" width="300px" height="auto"></p>
+
+`VmAllocateVp` allocates the memory for `VM_VP`, its platform-specific area, and one `VM_VPLC` per supported VTL from the partition compartment, copies the initial processor context captured earlier by **HvLoader**, creates and attaches to the VP private address space when address-space isolation is enabled, and then creates the VP’s backing thread.
+
+A key detail is that VP construction then continues inside the newly **created backing thread**: the main hypervisor system thread waits, the scheduler selects the new thread, and that thread runs **`ObConstructVp`**, which attaches the current `CPU_PLS` to the VP, sets **VTL 0** active, initializes platform-specific VP state through the **VAL**, allocates per-VTL VMCS/VMCB structures and per-VTL SLAT tables, initializes the real-mode emulator, and sets the VMCS host-state to return to the hypervisor’s VAL dispatch loop.
+
+The VP layer also allocates shared guest/hypervisor pages such as the **hypercall page**, and for each VTL the **assist** and **intercept message** pages, which are used to expose code/data paths between the guest and the hypervisor.
+
+When construction finishes, the VP dispatch thread activates the VP and its **SynIC**, restores the initial register context into the VMCS/VMCB if this is the root BSP VP, signals that VP initialization is complete so the main system thread can enter idle, and enters the **VAL dispatch loop**.
+
+Because the VP is new, the VAL dispatch loop prepares it for first execution and performs **`VMLAUNCH`**, causing execution to resume exactly where **HvLoader** transferred control to the hypervisor, except now Windows boot continues inside the newly created **root partition** rather than directly on raw hardware.
+
+<p align="center"><img src="./assets/hyper-v-startup.png" width="500px" height="auto"></p>
