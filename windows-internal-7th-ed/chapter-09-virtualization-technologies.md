@@ -73,7 +73,7 @@ Root partition: Windows drivers + virtualization stack + VM management
 Child partitions: guest operating systems
 ```
 
-#### Child partitions
+### Child partitions
 
 - A **child partition** is an OS instance running alongside the root/parent partition. It corresponds to what is usually called a **guest VM**, although Hyper-V terminology uses **child partition** instead.
 - Unlike the parent/root partition, a child partition has a heavily restricted view of the system.
@@ -104,64 +104,16 @@ Child partition
   - synthetic device communication
   - management from the root partition
 
-#### Processes and threads
+### Processes and threads
 
-Internally, the Windows hypervisor represents a VM using several core data structures. The important mapping is:
+The Windows hypervisor represents each VM as a **partition** (`VM_PARTITION`), mainly composed of guest physical memory and one or more **virtual processors** (`VM_VP`), where each VP is treated as a schedulable entity that the hypervisor scheduler dispatches onto physical CPUs.
 
-```text
-VM / Partition
-    → `VM_PARTITION` - represents the virtual machine from the hypervisor’s point of view.
-    → `TH_PROCESS`
-        → contains address-space / memory-management state
-        → contains hypervisor threads
-            → each `TH_THREAD` is tied to a `VM_VP`
-```
+For each VP, the hypervisor creates a **hypervisor thread** (`TH_THREAD`), which acts as the schedulable execution context for that VP and contains its stack, scheduling metadata, dispatch-loop entry point, pointer to the associated `VM_VP`, and pointer to the owning hypervisor process.
 
-A partition contains:
+A **hypervisor process** (`TH_PROCESS`) represents the partition as a process-like container for its address space and execution state; it owns the list of `TH_THREAD` objects, scheduling information such as physical CPU affinity, and pointers to partition memory-management structures such as the memory compartment, reserved pages, and page-directory root.
 
-- guest physical memory
-- one or more virtual processors
-- scheduling-related state
-- memory-management structures
-- address-space metadata
-
-So at the hypervisor level, a VM is not primarily “a set of virtual devices.” It is mainly a combination of **memory + virtual processors + scheduling/memory state**.
-
-- Each **virtual processor**, or **VP**, is internally represented by `VM_VP`.
-- A VP is the unit that gets scheduled by the hypervisor.
-- The hypervisor has its own scheduler, similar conceptually to the NT kernel scheduler, but operating at the virtualization layer. Its job is to dispatch VPs from different partitions onto physical CPUs.
-- This matters because Hyper-V does not schedule “VMs” directly. It schedules their **virtual processors**.
-- For every VP that the hypervisor creates, it also creates a corresponding hypervisor thread: `TH_THREAD`.
-- The **TH_THREAD** is the glue between a VP and the hypervisor’s schedulable execution unit.
-  - It represents the **current physical execution context** and contains important execution/scheduling fields, including:
-      - the thread execution stack
-      - scheduling data
-      - pointer to the associated virtual processor, `VM_VP`
-      - entry point of the **thread dispatch loop**
-      - pointer to the owning hypervisor process, `TH_PROCESS`
-- So the relationship is:
-
-```text
-VM_VP
-    ↔ TH_THREAD
-```
-  - The VP represents the virtual CPU state.
-  - The hypervisor thread represents the schedulable execution context used to run that VP.
-
-A hypervisor process is represented by:
-
-```text
-TH_PROCESS
-```
-
-This is not a normal Windows user-mode process. It is a hypervisor-internal object.
-
-- A **TH_PROCESS** represents a partition and acts as the container for that partition’s address-space state.
-- It contains:
-  - list of hypervisor threads
-  - scheduling data
-  - physical CPU affinity allowed for that partition/process
-  - pointer to partition memory structures
+So the key model is: **partition = VM container**, **hypervisor process = address-space/scheduling container for that partition**, **VP = virtual CPU**, and **hypervisor thread = schedulable unit backing a VP**.
+ pointer to partition memory structures
   - physical and virtual address-space metadata
 - The memory-related fields include things such as:
   - memory compartment
@@ -201,3 +153,11 @@ TH_THREAD(s)
     ↓
 Scheduled onto physical CPUs
 ```
+
+### Enlightenments
+
+- Enlightenments are **hypervisor-aware** code paths inside the Windows kernel and drivers that detect execution inside a child partition and replace expensive virtualized hardware behavior with more efficient cooperation with the hypervisor, usually through **hypercalls**.
+- A typical example is a **long spin-wait loop**: instead of wasting a physical CPU while a VP waits, Windows can notify the hypervisor, allowing it to track the wait condition and potentially **schedule another VP** on that physical processor until the original VP can make progress.
+- Other enlightenments optimize operations such as **interrupt-state transitions** and **APIC access**, where Windows coordinates directly with the hypervisor instead of triggering real **APIC accesses** that would then need to be **trapped** and **virtualized**.
+- The important memory-management example is **TLB flushing**: on native multiprocessor Windows, flushing stale TLB entries often requires sending **IPIs** to other processors, but in a VM this would be inefficient because physical CPUs may currently be running **VPs from unrelated partitions**, so enlightened Windows issues a hypercall asking the hypervisor to flush only the **relevant TLB state** for that child partition.
+🧠 The key idea is that enlightenments avoid pretending the guest is running on raw hardware; Windows knows it is virtualized and uses hypervisor-specific paths to reduce unnecessary traps, IPIs, rescheduling, and cross-partition performance side effects.
