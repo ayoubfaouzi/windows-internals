@@ -39,24 +39,24 @@
 | Guest VM         | **Child partition** |
 
 - A partition contains, at the hypervisor level:
-  - assigned physical memory
-  - one or more **virtual processors** / **VPs**
-  - local virtual APICs
-  - virtual timers
-- Other things commonly associated with a VM, such as virtual motherboard, virtual devices, synthetic peripherals are not really hypervisor concepts. They belong mostly to the **virtualization stack** running in the root partition.
+  - Assigned physical memory
+  - One or more **virtual processors** / **VPs**
+  - Local virtual APICs
+  - Virtual timers
+- Other things commonly associated with a VM, such as virtual motherboard, virtual devices, synthetic peripherals are not really **hypervisor concepts**. They belong mostly to the **virtualization stack** running in the root partition.
 - A Hyper-V system always has at least one partition: the **root partition**.
 - The root partition is where the main Windows OS runs. It is special because it provides:
-  - the virtualization stack
-  - hardware device drivers
+  - The virtualization stack
+  - Hardware device drivers
   - VM management infrastructure
-  - control over child partitions
+  - Control over child partitions
   - I/O handling on behalf of guests
-  - management services/APIs
+  - Management services/APIs
 - Only the root partition has **full control** over the machine from the Windows virtualization model’s point of view.
 - Even though the hypervisor itself is loaded very early by the Windows Loader, before the root OS fully exists, the hypervisor stays small. The root Windows OS later provides the larger virtualization infrastructure.
 - Each guest OS runs inside a **child partition**.
   - A child partition can include tools/components that improve performance or manageability, such as Hyper-V integration components or **enlightened drivers**.
-  - Child partitions usually do **not** access physical hardware directly. Their I/O operations are typically intercepted or routed through the root partition.
+  - Child partitions usually do **not** access physical hardware directly. Their I/O operations are typically intercepted or routed through the **root partition**.
   - There are exceptions, such as certain **passthrough** or **direct device assignment** scenarios, but the general design is that the root partition owns the real hardware.
 - Partitions are organized **hierarchically**.
   - The **root partition** controls the child partitions. For certain events occurring inside a child partition, the root receives notifications called **intercepts**.
@@ -64,7 +64,7 @@
 
 <p align="center"><img src="./assets/root-partition-components.png" width="200px" height="auto"></p>
 
-- The root partition’s own hardware accesses are mostly passed through by the hypervisor, meaning the root OS can usually talk directly to the hardware through normal Windows drivers. Child partitions are much more restricted.
+- The root partition’s own hardware accesses are mostly passed through by the hypervisor, meaning the root OS can usually talk **directly** to the hardware through normal **Windows drivers**. Child partitions are much more restricted.
 - A major design goal of the Windows hypervisor is to keep it small and modular, closer to a **microkernel-like** design rather than a large monolithic hypervisor.
 
 ```text
@@ -97,12 +97,12 @@ Child partition
 - So child partitions are **consumers** of **virtualization services**, not providers of them.
 - A child partition has **fewer** virtualization-related components than the parent partition. This is because it does not run the virtualization stack. It only needs enough support to communicate with the stack running in the root partition.
 - In a Windows child partition, these components are usually **integration/enlightenment** components that improve:
-  - performance
-  - device access
-  - time synchronization
-  - shutdown/save/restore behavior
-  - synthetic device communication
-  - management from the root partition
+  - Pperformance
+  - Device access
+  - Time synchronization
+  - Shutdown/save/restore behavior
+  - Synthetic device communication
+  - Management from the root partition
 
 ### Processes and threads
 
@@ -112,23 +112,7 @@ For each VP, the hypervisor creates a **hypervisor thread** (`TH_THREAD`), which
 
 A **hypervisor process** (`TH_PROCESS`) represents the partition as a process-like container for its address space and execution state; it owns the list of `TH_THREAD` objects, scheduling information such as physical CPU affinity, and pointers to partition memory-management structures such as the memory compartment, reserved pages, and page-directory root.
 
-So the key model is: **partition = VM container**, **hypervisor process = address-space/scheduling container for that partition**, **VP = virtual CPU**, and **hypervisor thread = schedulable unit backing a VP**.
- pointer to partition memory structures
-  - physical and virtual address-space metadata
-- The memory-related fields include things such as:
-  - memory compartment
-  - reserved pages
-  - page directory root
-  - other partition memory-management data
-
-So the relationship is:
-
-```text
-TH_PROCESS
-    → represents a partition
-    → contains TH_THREAD objects
-    → each TH_THREAD is backed by a VM_VP
-```
+👉 The key model is: **partition = VM container**, **hypervisor process = address-space/scheduling container for that partition**, **VP = virtual CPU**, and **hypervisor thread = schedulable unit backing a VP**.
 
 When the hypervisor creates a new partition:
 
@@ -145,17 +129,15 @@ When the hypervisor creates a new partition:
 - Other enlightenments optimize operations such as **interrupt-state transitions** and **APIC access**, where Windows coordinates directly with the hypervisor instead of triggering real **APIC accesses** that would then need to be **trapped** and **virtualized**.
 - The important memory-management example is **TLB flushing**: on native multiprocessor Windows, flushing stale TLB entries often requires sending **IPIs** to other processors, but in a VM this would be inefficient because physical CPUs may currently be running **VPs from unrelated partitions**, so enlightened Windows issues a hypercall asking the hypervisor to flush only the **relevant TLB state** for that child partition.
 
-👉 The key idea is that enlightenments avoid pretending the guest is running on raw hardware; Windows knows it is virtualized and uses hypervisor-specific paths to reduce unnecessary traps, IPIs, rescheduling, and cross-partition performance side effects.
-
 ### Partition’s privileges, properties, and version features
 
-- When a partition is first created, usually by **VID**, it initially has **no VPs**, and this is the only window where VID/root can adjust the partition’s **privileges**; once even one VP starts executing, the hypervisor refuses later privilege changes.
-- A partition privilege defines what the enlightened OS inside that partition is allowed to do through **hypercalls** or **synthetic MSRs**, and the default set depends on the partition type: both root and child partitions get basic self-management privileges such as **accessing runtime/reference time**, **SynIC timers/registers**, **virtual APIC assist page**, **hypercall MSRs/code page**, **VP idle/index/TSC state**, VSM/per-VTL synthetic registers, AP startup, and fast hypercall support.
-- The **root partition** gets the powerful management privileges: creating and referencing child partitions, depositing/withdrawing memory from a partition compartment, creating and managing connection ports, posting messages/signaling events, mapping hypervisor statistics pages, enabling/querying hypervisor debugging, scheduling child VPs, accessing child SynIC synthetic MSRs, and triggering enlightened system reset.
+- When a partition is first created, usually by **VID.sys** (Virtualization Infrastructure Driver), it initially has **no VPs**, and this is the only window where VID/root can adjust the partition’s **privileges**; once even one VP starts executing, the hypervisor refuses later privilege changes 🤷‍♀️.
+- A partition privilege defines what the enlightened OS inside that partition is allowed to do through **hypercalls** or **synthetic MSRs**, and the default set depends on the partition type: **both root and child partitions** get basic self-management privileges such as ➡️accessing runtime/reference time, SynIC timers/registers, virtual APIC assist page, hypercall MSRs/code page, VP idle/index/TSC state, VSM/per-VTL synthetic registers, AP startup, and fast hypercall support.
+- The **root partition** gets the powerful management privileges: ➡️creating and referencing child partitions, depositing/withdrawing memory from a partition compartment, creating and managing connection ports, posting messages/signaling events, mapping hypervisor statistics pages, enabling/querying hypervisor debugging, scheduling child VPs, accessing child SynIC synthetic MSRs, and triggering enlightened system reset.
 - The **child partition** has only **limited extra privileges**, mainly to generate an extended hypercall intercept into the root partition and to notify the root scheduler that an event has been signaled so the guest’s VP-backed thread can be prioritized or rescheduled.
 - An **EXO partition** has no default privileges.
-- Partition **properties** are different from privileges because they can be queried or changed at any time, and they cover runtime categories such as scheduler settings like **Cap/Weight/Reserve**, **suspend/resume time properties**, hypervisor **debugger configuration**, virtual hardware resource properties such as TLB size or SGX support, and compatibility properties tied to the VM’s configured virtual hardware level.
-- The VM’s **compatibility level**, stored in its configuration and passed by VID to the hypervisor, controls which virtual hardware features are exposed to the guest VP; for example, older compatibility levels before *Windows 10 RS1* hide guest **PAT** support even if the physical CPU supports it, while newer compatibility levels allow the hypervisor to expose PAT registers to the guest.
+- Partition **properties** are different from privileges because they can be queried or changed at any time, and they cover runtime categories such as scheduler settings like ➡️ Cap/Weight/Reserve, suspend/resume time properties, hypervisor debugger configuration, virtual hardware resource properties such as TLB size or SGX support, and compatibility properties tied to the VM’s configured virtual hardware level.
+- The VM’s **compatibility level**, stored in its configuration and passed by VID to the hypervisor, controls which virtual hardware features are exposed to the guest VP; for example, older compatibility levels before _Windows 10 RS1_ hide guest **PAT** support even if the physical CPU supports it, while newer compatibility levels allow the hypervisor to expose PAT registers to the guest.
 - The **root partition** is special at boot because the hypervisor gives it the **highest compatibility level**, allowing the root Windows OS to use all hardware features supported by the physical platform.
 
 ## The hypervisor startup
@@ -196,4 +178,24 @@ When construction finishes, the VP dispatch thread activates the VP and its **Sy
 
 Because the VP is new, the VAL dispatch loop prepares it for first execution and performs **`VMLAUNCH`**, causing execution to resume exactly where **HvLoader** transferred control to the hypervisor, except now Windows boot continues inside the newly created **root partition** rather than directly on raw hardware.
 
-<p align="center"><img src="./assets/hyper-v-startup.png" width="500px" height="auto"></p>
+<p align="center"><img src="./assets/hyper-v-startup.png" width="800px" height="auto"></p>
+
+## The hypervisor memory manager
+
+Hyper-V manages physical memory through **memory compartments**. Before startup, `Hvloader.dll` estimates and reserves the pages required by the hypervisor and root partition, including memory for the IOMMU, PFN database, SLAT tables, and HAL address space. These pages are then used to create the root compartment.
+
+<p align="center"><img src="./assets/hypervisor-memory-compartment.png" width="500px" height="auto"></p>
+
+A compartment owns a set of deposited physical pages organized by NUMA node and tracked through the hypervisor’s PFN database. Child compartments receive pages from the root and return their remaining pages when destroyed. If an internal hypervisor allocation fails, the system crashes; if a child partition lacks memory, Hyper-V returns `INSUFFICIENT_MEMORY`, allowing the root partition to deposit more pages with `HvDepositMemory` before retrying the operation.
+
+Each compartment also receives a private virtual-address range called a **zone**. Hyper-V uses a single root page table with reserved entries that dynamically switch mappings between compartment zones and virtual-processor address spaces.
+
+### Partitions’ physical address space
+
+Each partition has a physical address space that uses **second-level address translation** (SLAT) to map **guest physical addresses** (GPAs) to **system physical addresses** (SPAs). SLAT is called EPT by Intel, NPT by AMD, and Stage 2 Address Translation by ARM. A guest therefore performs two translations: its OS translates virtual addresses to GPAs, and the processor uses SLAT to translate those GPAs to SPAs.
+
+<p align="center"><img src="./assets/slat.png" width="500px" height="auto"></p>
+
+The root partition uses an **identity mapping**, where each GPA maps to the same SPA. Hyper-V creates separate SLAT tables for every supported **Virtual Trust Level** (VTL); these tables contain similar mappings but apply different permissions to isolate the VTLs. Hypervisor-owned pages are reserved and inaccessible to the partition.
+
+For a **child** partition, Hyper-V initially creates only the **root SLAT** table for each VTL. The VID driver then allocates physical pages from the root partition, asks Hyper-V to pre-create the required SLAT hierarchy, and maps the pages using the `HvMapGpaPages` hypercall. If the child’s memory compartment lacks pages for these structures, VID deposits additional memory into it. Hyper-V finally builds the mappings with VTL-specific protections, using **large pages** where possible to reduce the number of translation levels.
