@@ -204,10 +204,20 @@ For a **child** partition, Hyper-V initially creates only the **root SLAT** tabl
 
 Speculative-execution attacks can allow a guest VM to infer sensitive data left in shared CPU resources by the hypervisor or root partition. Hyper-V mitigates this through **HyperClear**, which combines the **core scheduler**, **virtual-processor address-space isolation**, and **sensitive-data scrubbing**. The core scheduler prevents **sibling SMT** threads from simultaneously running virtual processors belonging to different partitions, reducing cross-VM leakage through shared caches.
 
-<p align="center"><img src="./assets/hyper-clear-mitigation.png" width="500px" height="auto"></p>
+<p align="center"><img src="./assets/hyper-clear-mitigation.png" width="400px" height="auto"></p>
 
 Although the hypervisor uses one global page-table root, it reserves **two PML4 entries** - covering a 1-TB virtual-address range - for a VP’s **private data**. During VP creation and thread switches, Hyper-V replaces these entries so that the executing thread can access only its current VP’s stack and private structures. “Private address space” is therefore technically a private **range** dynamically inserted into the global address space.
 
 Within this range, memory zones (`MM_ZONE`) organize per-VP secrets. A zone contains page directories that can be attached or detached by changing its **PDPTEs**, while switching the entire VP-private range requires updating only two PML4 entries. This makes address-space isolation relatively inexpensive while preventing a hypervisor thread from accessing another VP’s sensitive data.
 
 <p align="center"><img src="./assets/hypervisor-private-address-spaces-and-private-memory-zones.png" width="500px" height="auto"></p>
+
+### Dynamic memory
+
+Hyper-V dynamic memory adjusts a VM’s physical memory according to its workload, reclaiming unused pages from underutilized VMs and assigning them to VMs under memory pressure. It combines the **NT memory manager’s** hot-add and hot-remove support, Hyper-V’s SLAT mappings, and communication between the guest’s `Dmvsc.sys` driver and the root partition’s `Vmdynmem.dll` module over VMBus.
+
+Windows supports memory hot-plugging through its **sparse PFN database**. It reserves enough virtual-address space to describe the maximum possible physical memory but maps PFN entries only for memory that is actually present. Hot-added memory receives new PFN mappings and is placed on the free-page list, while removed memory has its PFNs marked unusable without releasing the reserved PFN virtual-address space, allowing the same range to be added again later.
+
+Every second, `Dmvsc.sys` reports guest memory-pressure statistics to the root partition. The **VMMS balancer** uses these reports and the root’s available memory to decide whether memory should be added or reclaimed. For hot-add, the root allocates physical pages, VID maps them into the guest through SLAT, and the guest calls `MmAddPhysicalMemory`. For removal, the guest uses `MmRemovePhysicalMemory` after ensuring the pages are free, zeroed, or safely pageable; VID then removes their guest mappings and returns the underlying pages to the root partition.
+
+## Hyper-V schedulers
