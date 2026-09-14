@@ -221,3 +221,31 @@ Windows supports memory hot-plugging through its **sparse PFN database**. It res
 Every second, `Dmvsc.sys` reports guest memory-pressure statistics to the root partition. The **VMMS balancer** uses these reports and the root’s available memory to decide whether memory should be added or reclaimed. For hot-add, the root allocates physical pages, VID maps them into the guest through SLAT, and the guest calls `MmAddPhysicalMemory`. For removal, the guest uses `MmRemovePhysicalMemory` after ensuring the pages are free, zeroed, or safely pageable; VID then removes their guest mappings and returns the underlying pages to the root partition.
 
 ## Hyper-V schedulers
+
+The Hyper-V scheduler determines which virtual processor runs on each physical processor, particularly when the system has more virtual processors than available hardware threads. At the end of each time slice, it selects the next virtual processor to execute. Hyper-V supports three scheduler implementations and exposes a common scheduler API that redirects scheduling operations to the active implementation.
+
+### The classic scheduler
+
+The classic scheduler uses a **round-robin** policy in which runnable virtual processors normally receive equal time slices. It supports VP affinity and NUMA-aware placement but generally does not know what a guest VP is executing. One exception is the **spin-lock enlightenment**, through which a Windows guest informs Hyper-V that it is actively waiting on a lock, allowing the scheduler to preempt it early and run another VP instead of wasting CPU cycles.
+
+Because equal scheduling can perform poorly on **oversubscribed** systems, the classic scheduler provides three controls: **reservations** guarantee a VM a minimum percentage of CPU capacity, **limits cap** its maximum CPU consumption, and **weights** determine its relative scheduling priority after all reservations have been satisfied.
+
+### Core Scheduler
+
+SMT exposes multiple logical processors from one physical core, but those processors share execution resources and caches. If the classic scheduler places VPs from different VMs on sibling SMT threads, one VM could potentially observe information belonging to another through side-channel attacks.
+
+The **core scheduler**, introduced with Windows Server 2016, addresses this by scheduling entire virtual cores onto physical cores. A physical core’s sibling threads may run only VPs belonging to the same VM; if a VM has no VP available for one sibling, that logical processor remains unused rather than running a VP from another VM. This creates a stronger isolation boundary while still allowing a guest to recognize and use SMT normally.
+
+Its fundamental scheduling object is the **scheduling unit**, representing either an SMT **group of VPs** or one VP for a non-SMT VM. Reservations, limits, and weights are applied to this unit, which can be blocked, resumed, or migrated between physical cores. The gang scheduler assigns its VP threads to sibling logical processors, while per-core dispatchers perform thread switching and maintain execution state. A global scheduler manager balances scheduling units across physical cores.
+
+### Root Scheduler
+
+The root scheduler, introduced in Windows 10 RS4, **delegates** guest VP scheduling to the **NT scheduler** in the **root** partition. It was designed primarily for lightweight, virtualization-based containers such as *Windows Defender Application Guard*, allowing container workloads to be scheduled and measured like ordinary host workloads.
+
+For each guest VP, the VID driver creates a kernel-mode **VP-dispatch thread** inside the VM’s minimal **VMMEM** process. The NT scheduler schedules these as normal threads while applying VM-specific policies. Each thread repeatedly invokes `HvDispatchVp`, which switches from the root VP to the guest VP and lets it execute until it blocks, generates an intercept, receives a root-directed interrupt, or is preempted when its time slice expires. The dispatch thread then waits if the VP is blocked or processes any returned intercept, sometimes forwarding it to the user-mode VM Worker Process.
+
+<p align="center"><img src="./assets/hyper-v-core-scheduler.png" width="400px" height="auto"></p>
+
+Hyper-V communicates scheduling events to the root through a **shared page** and **synthetic interrupts**. This design gives the root VP priority and centralized control, but context switching is more expensive because switching between guest VPs requires returning through the root partition. Migrating a guest VP between physical processors may also require its previous processor to flush the saved VP context before execution can continue.
+
+## Hypercalls and the hypervisor TLFS
