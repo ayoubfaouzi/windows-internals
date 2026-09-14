@@ -249,3 +249,15 @@ For each guest VP, the VID driver creates a kernel-mode **VP-dispatch thread** i
 Hyper-V communicates scheduling events to the root through a **shared page** and **synthetic interrupts**. This design gives the root VP priority and centralized control, but context switching is more expensive because switching between guest VPs requires returning through the root partition. Migrating a guest VP between physical processors may also require its previous processor to flush the saved VP context before execution can continue.
 
 ## Hypercalls and the hypervisor TLFS
+
+Hypercalls allow root and child partitions to request services from the hypervisor. Executing the architecture-specific instruction - `VMCALL` on Intel, `VMMCALL` on AMD, or `HVC` on ARM64 - causes a VM exit, after which the hypervisor reads a 64-bit control value containing the hypercall code, properties, and calling convention.
+
+<p align="center"><img src="./assets/hyper-v-hypercall-structure.png" width="400px" height="auto"></p>
+
+**Standard hypercalls** pass input and output through **guest-memory buffers**, **fast hypercalls** pass up to **16 bytes** directly through **registers**, and **extended fast hypercalls** use additional `XMM` registers to pass up to **112 bytes**. A **simple** hypercall performs one operation, while a **rep** hypercall processes a list of elements and returns the number completed.
+
+<p align="center"><img src="./assets/hyper-v-hypercall-result.png" width="400px" height="auto"></p>
+
+Long operations use hypercall continuation. After ~50 microseconds, Hyper-V may return to the caller without advancing the instruction pointer, allowing interrupts and other VPs to run. The same hypercall instruction is executed again later to continue the operation.
+
+Windows drivers normally invoke hypercalls through `WinHvr.sys` in the root partition or `WinHv.sys` in a child partition instead of executing the platform-specific instruction directly. The available interfaces and calling conventions are documented in the Hyper-V *Top-Level Functional Specification* (TLFS).
