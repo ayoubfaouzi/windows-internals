@@ -305,3 +305,26 @@ WHP exposes user-mode APIs through `WinHvPlatform.dll` and `WinHvEmulation.dll`,
 Most requests reach VID through `\Device\VidExo`. Performance-sensitive operations can instead invoke the hypervisor directly from user mode through a **doorbell page**: accessing this specially marked invalid page causes a VM exit that Hyper-V interprets as a hypercall, avoiding a transition through the Windows kernel.
 
 WHP creates minimal **EXO partitions**, which require the root scheduler. EXO partitions are **VA-backed**, use the third-party VMM process itself to host guest memory, support **only VTL 0**, and omit Hyper-V-specific synthetic privileges. They must also implement their own timing because Hyper-V does not provide them with a virtual clock interrupt source.
+
+## Nested Virtualization
+
+Nested virtualization allows a guest VM to run its own hypervisor and nested VMs. The bare-metal **L0 hypervisor** exposes emulated virtualization extensions to an L1 guest, which runs the **L1 hypervisor**. That hypervisor can then create and run **L2 guests**.
+
+This capability is implemented largely in software: virtualization instructions executed by L1 cause VM exits to L0, which validates and emulates their effects. Nested virtualization must be explicitly enabled for the L1 VM; otherwise, executing virtualization instructions generates a general-protection exception.
+
+On Intel systems, Hyper-V implements nested virtualization through VT-x emulation and nested address translation. L0 maintains three structures for an L2 VP: a **nested VMCS** containing Hyper-V’s software bookkeeping, a **virtual VMCS** containing the virtualization state visible and modifiable by L1, and a **physical VMCS** loaded into the processor by L0 when L2 executes. When L1 issues `VMLAUNCH`, L0 intercepts it, prepares the physical VMCS from the virtualized state, and starts the L2 VP.
+
+<p align="center"><img src="./assets/hyper-v-nested-vmcs.png" width="500px" height="auto"></p>
+
+
+### Emulation of the VT-x virtualization extensions
+
+Hyper-V can emulate Intel VT-x for both enlightened and nonenlightened L1 hypervisors, although only Hyper-V nested inside Hyper-V is officially supported. With a **nonenlightened** L1, every VT-x instruction causes an exit to L0. When L1 activates its guest VMCS with `VMPTRLD`, L0 associates it with a nested VMCS and redirects subsequent VMCS accesses to a virtual VMCS.
+
+When L1 executes `VMLAUNCH`, L0 copies the L2 guest state from the **virtual VMCS** into a **real hardware VMCS**, configures its host fields to return control to L0, prepares nested address translation, and enters L2. Any L2 VM exit first returns to L0, which restores L1 and presents the event to it as a **synthetic VM exit**. L1 handles the event and eventually executes `VMRESUME`, which L0 intercepts to restart L2.
+
+Because trapping every VMCS operation is expensive, an enlightened L1 can use an **enlightened VMCS**, a shared memory page that both L0 and L1 can access directly. L1 modifies virtualization state in this page without executing trapping VT-x instructions, and L0 synchronizes it with the virtual VMCS when L2 is entered. This substantially reduces nested-virtualization overhead.
+
+> Note It is worth mentioning that for nonenlightened scenarios, the L0 hypervisor supports another technique for preventing VMEXITs while managing nested virtualization data, called **shadow VMCS**. Shadow VMCS is a hardware optimization very similar to the enlightened VMCS.
+
+### Nested address translation
