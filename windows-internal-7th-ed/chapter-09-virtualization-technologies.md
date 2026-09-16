@@ -385,3 +385,21 @@ VMWP performs a **cold-start transition** through the virtual motherboard, which
 The virtual motherboard then powers up every device. The virtual BIOS device extracts the appropriate BIOS or UEFI firmware, generates configuration structures such as ACPI tables, and writes them into guest memory through a VID memory **aperture**. After all devices are initialized, VMWP asks VID to start the bootstrap VP and its message pump, beginning guest execution.
 
 
+### VMBus
+
+**VMBus** provides high-speed communication between root and child partitions and forms the foundation for Hyper-V synthetic devices. A guest-side **Virtualization Service Consumer (VSC)** forwards device requests through a VMBus channel to a root-side **Virtualization Service Provider (VSP)**. Data is transferred primarily through shared upstream and downstream **ring buffers**, while **SynIC** messages and events provide signaling.
+
+During VM startup, the VMBus virtual device connects VMWP to the root VMBus driver, `Vmbusr.sys`. The driver creates an `XPartition` object representing the child’s VMBus instance and establishes the required SynIC message and event ports. In the root, synthetic interrupts are processed by VMBus interrupt handlers and deferred to lower-priority workers for validation and processing.
+
+Root-side VSP drivers use the **Kernel Mode Client Library (KMCL)** to create and offer channels to the child. These offers are recorded before the guest starts, but they cannot be completed until the guest loads `Vmbus.sys`, performs the initial **handshake**, and accepts the offered channels. Once connected, each VSC/VSP pair can exchange device requests and notifications efficiently without emulating physical hardware operations.
+
+#### Initial VMBus message handshaking
+
+Inside a Windows guest, `Vmbus.sys` is a WDF bus driver discovered through ACPI. During initialization, it creates the **VMBus device**, configures a synthetic interrupt source, connects it to `KiVmbusInterrupt2`, obtains the shared SIMP message page, and creates an `XPartition` object representing the root partition.
+
+The guest then begins a two-phase handshake. First, it sends an **Initiate Contact** message to negotiate a VMBus protocol version with the root, retrying with older versions when necessary. Once compatible, it sends **Request Offers**, prompting the root to enumerate all channels previously offered by its VSP drivers.
+
+<p align="center"><img src="./assets/hyper-v-vmbus-initial-handshake.png" width="500px" height="auto"></p>
+
+For each **Offer Channel** message, the guest records the channel and uses its type and instance GUIDs to identify the corresponding synthetic device. VMBus normally creates a **Physical Device Object** (PDO), allowing Plug and Play to load the appropriate VSC driver. The VSC then calls `VmbEnableChannel` to open the channel and establish the shared ring buffers used for communication with the root-side VSP.
+
