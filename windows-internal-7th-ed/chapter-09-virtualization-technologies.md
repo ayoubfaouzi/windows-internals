@@ -403,3 +403,14 @@ The guest then begins a two-phase handshake. First, it sends an **Initiate Conta
 
 For each **Offer Channel** message, the guest records the channel and uses its type and instance GUIDs to identify the corresponding synthetic device. VMBus normally creates a **Physical Device Object** (PDO), allowing Plug and Play to load the appropriate VSC driver. The VSC then calls `VmbEnableChannel` to open the channel and establish the shared ring buffers used for communication with the root-side VSP.
 
+#### Opening a VMBus channel and creating the ring buffer
+
+A guest VSC opens an offered VMBus channel through `VmbChannelEnable`. KMCL obtains the channel parameters and allocates incoming and outgoing ring buffers from the guest’s nonpaged pool.
+
+Each ring buffer is **double-mapped**: its physical pages are mapped twice into two consecutive virtual-address ranges. A packet written across the end of the first mapping therefore continues transparently into the duplicated mapping, while physically wrapping to the beginning of the buffer. Shared control pages track read and write positions and determine whether an interrupt must be generated.
+
+<p align="center"><img src="./assets/hyper-v-vmbus-ringbuffer.png" width="500px" height="auto"></p>
+
+To share the buffers with the root partition, the guest describes their pages in a **Guest Physical Address Descriptor List (GPADL)**. VMBus sends this description to the root, where VID maps the same guest pages into the root’s address space. Both endpoints can then exchange data directly through shared memory.
+
+After writing a packet, the sender signals the receiver through a monitor-page flag or an event port, depending on the required latency. VMBus also supports higher-level transports, including VMBus pipes and **Hyper-V Sockets**, which provide socket-style interpartition communication addressed by VM and service GUIDs rather than IP addresses and TCP/UDP ports.
