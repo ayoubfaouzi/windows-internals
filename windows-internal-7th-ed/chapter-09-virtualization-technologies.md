@@ -328,3 +328,32 @@ Because trapping every VMCS operation is expensive, an enlightened L1 can use an
 > Note It is worth mentioning that for nonenlightened scenarios, the L0 hypervisor supports another technique for preventing VMEXITs while managing nested virtualization data, called **shadow VMCS**. Shadow VMCS is a hardware optimization very similar to the enlightened VMCS.
 
 ### Nested address translation
+
+Nested virtualization would ideally require hardware to translate **L2 GPA → L1 GPA → SPA**, but processors do not provide this third translation layer. Hyper-V therefore uses **shadow nested page tables**, maintained by L0, that translate L2 GPAs directly to real SPAs.
+
+The shadow table initially contains no mappings and is populated on demand. When L2 accesses an unmapped GPA, an EPT violation returns control to L0. L0 walks the nested page tables created by L1 to obtain the corresponding L1 GPA, translates that address to an SPA, inserts the direct mapping into the shadow table, and resumes L2.
+
+New L1 mappings require no immediate synchronization because L0 discovers them when L2 faults. When L1 modifies or removes an existing mapping, however, it must request a **TLB flush**. L0 intercepts that request and normally invalidates the entire shadow table to prevent stale mappings. Because rebuilding it through repeated faults is expensive, the **direct virtual flush enlightenment** lets L1 use hypercalls such as `HvFlushGuestPhysicalAddressList` to invalidate specific guest-physical mappings instead.
+
+The simplest way to think about it is:
+> A shadow nested page table is a cached composition of L1’s EPT and L0’s EPT, allowing the processor to translate an L2 GPA directly into real machine memory.
+
+### The Windows hypervisor on ARM64
+
+ARM64 was designed with virtualization support through hierarchical **Exception Levels**. Applications run at EL0, the Windows kernel and drivers at EL1, and the hypervisor at EL2. Unlike x64 systems, ARM64 firmware normally begins execution at EL2, allowing the Windows hypervisor loader to start Hyper-V directly before transferring the operating system to EL1.
+
+<p align="center"><img src="./assets/hyper-v-arm64-execution-env.png" width="400px" height="auto"></p>
+
+ARM **TrustZone** adds a separate security dimension by dividing the system into **Normal World** and **Secure World**. Secure World can access protected and normal resources, while Normal World cannot access secure memory. Communication from Normal World uses **Secure Monitor Calls** (SMCs), with hardware protection units enforcing memory isolation.
+
+On ARM64 servers, Windows can generally take direct ownership of EL2. Many Qualcomm-based client devices instead begin with **Qualcomm’s QHEE** hypervisor at EL2, which uses stage-2 translation to isolate memory and mediates SMC requests. Because QHEE and Hyper-V cannot both own EL2 🫤, Secure Launch coordinates a handoff in which QHEE loads and verifies Hyper-V, then unloads itself.
+
+Windows later creates the **QcExt trustlet** inside its secure environment. This trustlet replaces QHEE’s relevant services by validating SMC requests, enforcing memory isolation with the Secure Kernel, and communicating with the Secure Monitor at EL3. This design allows ARM64 clients to run Hyper-V, Secure Launch, and VSM by default.
+
+## The virtualization stack
+
+The hypervisor provides isolation and low-level control over virtualization hardware, while the **virtualization stack** implements complete virtual machines. It manages VM state and memory, supplies virtual firmware and a virtual motherboard, and supports emulated, synthetic, and directly assigned devices. It also includes **VMBus**, which provides high-speed communication between guests and the root partition through the Kernel Mode Client Library abstraction.
+
+<p align="center"><img src="./assets/hyper-v-virtualization-stack.png" width="500px" height="auto"></p>
+
+### Virtual machine manager service and worker processes
