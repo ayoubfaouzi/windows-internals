@@ -357,3 +357,13 @@ The hypervisor provides isolation and low-level control over virtualization hard
 <p align="center"><img src="./assets/hyper-v-virtualization-stack.png" width="500px" height="auto"></p>
 
 ### Virtual machine manager service and worker processes
+
+`Vmms.exe` is the central Hyper-V management service. It exposes WMI interfaces used by Hyper-V Manager and PowerShell to create and control VMs, configure their processors, memory and devices, and manage lifecycle operations such as start, shutdown, pause, resume, and snapshot. When a VM starts, VMMS creates a dedicated `Vmwp.exe` process for it.
+
+The **Virtual Machine Worker Process (VMWP)** manages one running VM. It controls the VM state machine, virtual motherboard and device state, handles hypervisor notifications, emulates legacy devices, coordinates snapshots, and provides remote-console access. It exposes COM interfaces through which VMMS and other management components control the VM.
+
+`Vmcompute.exe` performs computation-heavy and storage-related work, including dynamic-memory analysis, VHD/VHDX management, and container-layer creation.
+
+Hyper-V records registered VMs in `C:\ProgramData\Microsoft\Windows\Hyper-V\data.vmcx`, while each VM has its own `.vmcx` hardware-configuration file. Saved-state files preserve the partition, memory, and virtual-device state. These files contain compressed XML-style key/value data in a journaled binary format designed to survive interrupted writes.
+
+### The VID driver and the virtualization stack memory manager
