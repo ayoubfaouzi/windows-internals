@@ -367,3 +367,21 @@ The **Virtual Machine Worker Process (VMWP)** manages one running VM. It control
 Hyper-V records registered VMs in `C:\ProgramData\Microsoft\Windows\Hyper-V\data.vmcx`, while each VM has its own `.vmcx` hardware-configuration file. Saved-state files preserve the partition, memory, and virtual-device state. These files contain compressed XML-style key/value data in a journaled binary format designed to survive interrupted writes.
 
 ### The VID driver and the virtualization stack memory manager
+
+`Vid.sys` is the main bridge between Hyper-V’s user-mode virtualization stack and the hypervisor. It provides partition, processor, and guest-memory management services to VMMS and the VM Worker Process. VID accesses the hypervisor through `WinHvr.sys` or `WinHv.sys`, allowing Windows components to use standard kernel APIs instead of issuing **hypercalls** directly 👍.
+
+VID also manages each VM’s guest physical memory through two phases. During **reservation**, the VM Worker Process consults the VMMS memory balancer and asks VID to allocate physical memory from the root partition. VID prefers 1-GB or 2-MB pages when possible, then organizes the reserved pages by page size and NUMA node.
+
+During **commitment**, VID transfers reserved pages into a memory block owned by the VM Worker Process. It first deposits additional pages into the hypervisor for constructing the VM’s SLAT tables, then asks Hyper-V to map the allocated host pages into the guest physical address space with the appropriate permissions. The resulting memory block tracks the VM’s RAM and also allows the Worker Process to access guest pages when emulating devices.
+
+### The birth of a Virtual Machine (VM)
+
+When VMMS receives a start request, it loads the VM configuration and virtual-device list, verifies the VHD/VHDX permissions, and corrects them when necessary. It then asks the **Host Compute Service** to create a dedicated VMWP process using a security token owned by the VM’s unique SID. Once VMWP initializes its COM interfaces, VMMS instructs it to start the VM.
+
+<p align="center"><img src="./assets/hyper-v-virtualization-stack.png" width="500px" height="auto"></p>
+
+VMWP performs a **cold-start transition** through the virtual motherboard, which represents either the legacy Intel *i440BX* platform for Generation 1 VMs or Microsoft’s proprietary Generation 2 platform. It loads each configured virtual device as a COM object, reserves the required resources, and uses VID to allocate and map the VM’s physical memory.
+
+The virtual motherboard then powers up every device. The virtual BIOS device extracts the appropriate BIOS or UEFI firmware, generates configuration structures such as ACPI tables, and writes them into guest memory through a VID memory **aperture**. After all devices are initialized, VMWP asks VID to start the bootstrap VP and its message pump, beginning guest execution.
+
+
