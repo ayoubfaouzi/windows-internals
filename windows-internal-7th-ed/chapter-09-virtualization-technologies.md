@@ -428,3 +428,12 @@ Devices are accessed either through the legacy I/O-port address space or through
 The virtual-device code then uses VMWP’s instruction emulator to reproduce the expected hardware behavior and complete the intercepted instruction. Because repeated VM exits are expensive, the emulator can execute sequences of intercept-heavy guest code inside VMWP, reducing transitions between the guest and virtualization stack. Older Hyper-V versions also used it to execute real-mode code that early virtualization hardware could not run directly.
 
 ### Paravirtualized devices
+
+Synthetic devices avoid the **frequent VM exits** required by hardware emulation because they are designed specifically for virtualized environments. Some correspond to familiar hardware functions, such as storage or networking, while others, such as **synthetic RDP**, exist only as virtual devices 🤷.
+
+<p align="center"><img src="./assets/hyper-v-storage-controller-pv-driver.png" width="400px" height="auto"></p>
+
+- A synthetic device consists of three components:
+  - The guest-side **VSC driver** sends device requests through shared VMBus channels to a root-side **VSP driver**, which performs the actual service.
+  - A synthetic VDEV inside VMWP manages lifecycle operations such as initialization, shutdown, save, and restore, and helps establish the VMBus channel, but normally does not participate in regular I/O.
+  - Once initialized, the **VSC** and VSP communicate directly through VMBus shared memory and notifications, providing much better performance than emulated devices.
