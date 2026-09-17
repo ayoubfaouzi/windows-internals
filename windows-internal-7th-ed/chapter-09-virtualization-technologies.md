@@ -384,7 +384,6 @@ VMWP performs a **cold-start transition** through the virtual motherboard, which
 
 The virtual motherboard then powers up every device. The virtual BIOS device extracts the appropriate BIOS or UEFI firmware, generates configuration structures such as ACPI tables, and writes them into guest memory through a VID memory **aperture**. After all devices are initialized, VMWP asks VID to start the bootstrap VP and its message pump, beginning guest execution.
 
-
 ### VMBus
 
 **VMBus** provides high-speed communication between root and child partitions and forms the foundation for Hyper-V synthetic devices. A guest-side **Virtualization Service Consumer (VSC)** forwards device requests through a VMBus channel to a root-side **Virtualization Service Provider (VSP)**. Data is transferred primarily through shared upstream and downstream **ring buffers**, while **SynIC** messages and events provide signaling.
@@ -409,8 +408,23 @@ A guest VSC opens an offered VMBus channel through `VmbChannelEnable`. KMCL obta
 
 Each ring buffer is **double-mapped**: its physical pages are mapped twice into two consecutive virtual-address ranges. A packet written across the end of the first mapping therefore continues transparently into the duplicated mapping, while physically wrapping to the beginning of the buffer. Shared control pages track read and write positions and determine whether an interrupt must be generated.
 
-<p align="center"><img src="./assets/hyper-v-vmbus-ringbuffer.png" width="500px" height="auto"></p>
+<p align="center"><img src="./assets/hyper-v-vmbus-ringbuffer.png" width="600px" height="auto"></p>
 
 To share the buffers with the root partition, the guest describes their pages in a **Guest Physical Address Descriptor List (GPADL)**. VMBus sends this description to the root, where VID maps the same guest pages into the root’s address space. Both endpoints can then exchange data directly through shared memory.
 
 After writing a packet, the sender signals the receiver through a monitor-page flag or an event port, depending on the required latency. VMBus also supports higher-level transports, including VMBus pipes and **Hyper-V Sockets**, which provide socket-style interpartition communication addressed by VM and service GUIDs rather than IP addresses and TCP/UDP ports.
+
+### Virtual hardware support
+
+- Hyper-V exposes three kinds of devices to guest VMs:
+  - **Emulated devices**, which reproduce physical hardware;
+  - **Synthetic devices**, which use VMBus and virtualization-aware drivers;
+  - **Direct-access devices**, which provide hardware-assisted access to physical devices.
+
+Devices are accessed either through the legacy I/O-port address space or through **memory-mapped I/O (MMIO)**. With an emulated device, guest accesses to these regions cause a VM exit. Hyper-V forwards the intercept through VID to the VM Worker Process, whose **message-pump** thread identifies the targeted virtual device and invokes its read or write callback.
+
+<p align="center"><img src="./assets/hyper-v-ide-emulated-io.png" width="400px" height="auto"></p>
+
+The virtual-device code then uses VMWP’s instruction emulator to reproduce the expected hardware behavior and complete the intercepted instruction. Because repeated VM exits are expensive, the emulator can execute sequences of intercept-heavy guest code inside VMWP, reducing transitions between the guest and virtualization stack. Older Hyper-V versions also used it to execute real-mode code that early virtualization hardware could not run directly.
+
+### Paravirtualized devices
