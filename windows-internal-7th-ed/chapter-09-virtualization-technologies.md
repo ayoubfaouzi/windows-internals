@@ -437,3 +437,29 @@ Synthetic devices avoid the **frequent VM exits** required by hardware emulation
   - The guest-side **VSC driver** sends device requests through shared VMBus channels to a root-side **VSP driver**, which performs the actual service.
   - A synthetic VDEV inside VMWP manages lifecycle operations such as initialization, shutdown, save, and restore, and helps establish the VMBus channel, but normally does not participate in regular I/O.
   - Once initialized, the **VSC** and VSP communicate directly through VMBus shared memory and notifications, providing much better performance than emulated devices.
+
+### Hardware-accelerated devices
+
+Hardware-accelerated devices use **SR-IOV** or **Discrete Device Assignment (DDA)** to expose a physical PCIe device directly to a guest. The guest accesses the device’s MMIO space and performs DMA without hypervisor interception, while the IOMMU restricts the device to memory assigned to that VM.
+
+<p align="center"><img src="./assets/hyper-v-hardware-accelerated-devices.png" width="400px" height="auto"></p>
+
+The `Pcip.sys` proxy driver first removes the device from normal host use and gathers its PCI resources, including MMIO ranges, BARs, interrupts, and DMA requirements. The **VPCI VDEV** in VMWP reads the assignment from the VM configuration, while `Vpcivsp.sys` creates a virtual PCI bus and communicates with the guest over VMBus.
+
+The VPCI VSP then calls `HvAttachDevice`, causing Hyper-V to configure the IOMMU and map the device into the guest partition. Inside the guest, `Vpci.sys` discovers the assigned devices through VMBus and creates a PDO for each one. The normal hardware driver attaches to that PDO and controls the device almost as if it were running on bare metal. After initialization, VPCI and VMBus are rarely involved because ordinary MMIO and DMA operations proceed directly between the guest and device.
+
+### VA-backed virtual machines
+
+Lightweight isolated environments such as Windows Sandbox and Application Guard require faster startup and lower memory usage than traditional VMs. Their containers often share firmware, operating-system code, and application data, making static private-memory allocation inefficient.
+
+A traditional VM receives host physical pages before execution, with SLAT directly mapping **GPA → SPA**. A **VA-backed VM** instead stores its guest memory in the virtual address space of a minimal `VMMEM` process:
+
+```text
+GPA → VMMEM virtual address → system physical address
+```
+
+VID manages the GPA-to-VA relationship, while the NT memory manager manages VA-to-SPA translation. The MicroVM kernel component combines both mappings and keeps the VM’s SLAT entries synchronized.
+
+Initially, the guest’s GPA space points to a special invalid physical address. When the guest accesses an unbacked page, Hyper-V generates a memory intercept. MicroVM resolves the corresponding VMMEM page fault, allocates or retrieves the physical page, updates the process PTE, and installs the final GPA-to-SPA mapping in SLAT.
+
+Because guest RAM is represented as ordinary **process virtual memory** 🧠, Windows can **page it out**, **trim it**, **deduplicate it**, **clone it** from templates, or **directly map shared** files and executable images. Multiple containers can therefore share the same physical base-layer pages while retaining isolated guest-physical address spaces.
