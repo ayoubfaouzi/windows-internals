@@ -463,3 +463,46 @@ VID manages the GPA-to-VA relationship, while the NT memory manager manages VA-t
 Initially, the guest’s GPA space points to a special invalid physical address. When the guest accesses an unbacked page, Hyper-V generates a memory intercept. MicroVM resolves the corresponding VMMEM page fault, allocates or retrieves the physical page, updates the process PTE, and installs the final GPA-to-SPA mapping in SLAT.
 
 Because guest RAM is represented as ordinary **process virtual memory** 🧠, Windows can **page it out**, **trim it**, **deduplicate it**, **clone it** from templates, or **directly map shared** files and executable images. Multiple containers can therefore share the same physical base-layer pages while retaining isolated guest-physical address spaces.
+
+### VA-backed VMs optimizations
+
+- Accessing an unbacked or incorrectly protected guest page is **expensive** because it triggers a VM exit and suspends the guest VP.
+- Hyper-V notifies VID in the root partition, which defers processing from high IRQL to a `PASSIVE_LEVEL` worker thread. MicroVM then resolves the host page fault, updates the guest’s SLAT entry through another hypercall, and resumes the VP.
+- Repeated memory intercepts can therefore severely reduce performance. Hyper-V minimizes them through several mechanisms:
+  - **memory-zeroing enlightenments**
+  - **memory-access hints**
+  - **enlightened page faults**,
+  - and **deferred commitment**.
+- These techniques let the guest or virtualization stack communicate memory intentions earlier, batch operations, or resolve some faults with fewer transitions between the guest, root partition, and hypervisor.
+
+#### Memory-zeroing enlightenments
+
+Hyper-V must zero guest RAM before exposing it to a VM to prevent disclosure of data previously owned by the root or another guest. However, operating systems normally zero physical memory during startup, causing memory to be cleared **twice**. For VA-backed VMs, the guest’s redundant writes also generate expensive memory intercepts.
+
+The `HvGetBootZeroedMemory` hypercall informs the Windows Loader which guest-physical ranges Hyper-V has already cleared. The loader marks these ranges as zeroed, allowing the NT memory manager to place them directly on its zeroed-page list. During dynamic-memory hot-add, `Dmvsc.sys` provides the `MM_ADD_PHYSICAL_MEMORY_ALREADY_ZEROED` flag for the same purpose, avoiding another unnecessary zeroing pass.
+
+#### Memory access hints
+
+For VA-backed VMs, guest memory belongs to the **working set** of the `VMMEM` process, so the guest can help the host decide which pages should remain resident. Through the `HvMemoryHeatHint` hypercall, the guest marks pages as **hot** or **cold**.
+
+A **hot hint** tells VID and MicroVM to fault the pages into physical memory and retain them in VMMEM’s working set because the guest expects to access them soon. A **cold hint** indicates that the pages are unlikely to be needed, allowing MicroVM to remove them from the working set and reclaim their physical backing. Windows commonly marks background-zeroed pages as cold.
+
+#### Enlightened page fault (EPF)
+
+Normally, a VA-backed memory fault blocks the entire guest VP until the root partition allocates the backing page and updates SLAT. **Enlightened Page Fault (EPF)** allows the guest to continue using that VP for other work while the fault is resolved.
+
+When an intercept occurs, VID starts background fault processing through MicroVM and injects a synchronous exception into the guest. The guest blocks only the thread that caused the fault and schedules another runnable thread on the same VP. Once the page becomes available, VID records the GPA in a completion queue and sends an asynchronous interrupt, allowing the guest to wake the original thread and retry its memory access.
+
+#### Deferred commit and other optimizations
+
+With **deferred commit**, VID reserves the VMMEM virtual-address range but does not charge commit for each guest page until that page is first accessed. This improves **VM density** and avoids unnecessarily expanding the page file, but removes the guarantee that backing memory will remain available. A VM can therefore fail at runtime if the root partition reaches its commit limit.
+
+MicroVM can also select small or large backing pages and optionally **pin pages** after their first access. Large or pinned pages can provide more stable **performance** by **reducing translation** overhead and preventing trimming, but they consume physical memory more aggressively and reduce the number of VMs the host can support.
+
+#### VMMEM Process
+
+The `VMMEM` process serves two purposes: it hosts the **VP-dispatch** threads used by the root scheduler and provides the virtual-address space that backs VA-backed VM memory.
+
+VID creates VMMEM as a minimal process through MicroVM while creating the partition. Its lower 4 GB of address space is reserved to prevent direct-mapped images from reducing the guest’s address-space entropy.
+
+Because VMMEM’s address space may contain the VM’s private physical memory, VID restricts access to `SYSTEM` and the VM’s dedicated Worker Process. The VMWP is authenticated using a VM-specific SID derived from the VM’s GUID, preventing unrelated processes or users from reading the guest’s memory.
